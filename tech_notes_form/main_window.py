@@ -1,0 +1,580 @@
+"""Main application window with the Import / Form / Export panels."""
+
+from __future__ import annotations
+
+from typing import List
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from . import APP_NAME, __version__
+from . import exporter, storage, themes
+from .exporter import EXPORT_MODES, MODE_SAME_LINE
+from .parser import Field, merge_fields, parse_notes
+from .widgets import FieldRow, PreferencesDialog, TemplatesDialog
+
+
+def _panel(title: str, collapse_glyph: str | None = None):
+    """Create a titled panel container.
+
+    Returns ``(frame, content_layout, collapse_btn)``. When *collapse_glyph* is
+    given, a small collapse button is added to the panel header and returned;
+    otherwise the third item is ``None``.
+    """
+    frame = QWidget()
+    frame.setObjectName("Panel")
+    outer = QVBoxLayout(frame)
+    outer.setContentsMargins(14, 14, 14, 14)
+    outer.setSpacing(10)
+
+    header = QHBoxLayout()
+    heading = QLabel(title)
+    heading.setObjectName("PanelTitle")
+    header.addWidget(heading)
+    header.addStretch(1)
+
+    collapse_btn = None
+    if collapse_glyph is not None:
+        collapse_btn = QPushButton(collapse_glyph)
+        collapse_btn.setObjectName("IconButton")
+        collapse_btn.setToolTip("Collapse this panel (reopen it from the View menu)")
+        collapse_btn.setCursor(Qt.PointingHandCursor)
+        header.addWidget(collapse_btn)
+
+    outer.addLayout(header)
+    return frame, outer, collapse_btn
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.resize(1180, 720)
+        self.setMinimumSize(420, 360)  # usable in tight/narrow areas
+
+        self.field_rows: List[FieldRow] = []
+        self.current_theme = themes.THEME_SYSTEM
+        self.settings: dict = {}
+        self.persistent_sidebars = True
+        self.compact = False
+
+        # Debounced auto-save timer.
+        self._save_timer = QTimer(self)
+        self._save_timer.setInterval(800)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._persist_draft)
+
+        self._build_ui()
+        self._build_menu()
+        self._load_state()
+        self._update_preview()
+        self._update_empty_state()
+
+    # ------------------------------------------------------------------ UI
+
+    def _build_ui(self):
+        self.import_panel = self._build_import_panel()
+        self.form_panel = self._build_form_panel()
+        self.export_panel = self._build_export_panel()
+
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(True)
+        self.splitter.addWidget(self.import_panel)
+        self.splitter.addWidget(self.form_panel)
+        self.splitter.addWidget(self.export_panel)
+        # The Form (middle) absorbs extra space; the side panels keep their size.
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([260, 760, 300])
+        for panel in (self.import_panel, self.form_panel, self.export_panel):
+            panel.setMinimumWidth(0)
+
+        # Thin "rails" on each edge that reopen a collapsed side panel. They are
+        # only shown when the panel is collapsed and persistent sidebars is on.
+        self.left_rail = self._make_rail("\u203a", "Reopen the Import panel")
+        self.right_rail = self._make_rail("\u2039", "Reopen the Export panel")
+        self.left_rail.clicked.connect(lambda: self.act_import.setChecked(True))
+        self.right_rail.clicked.connect(lambda: self.act_export.setChecked(True))
+
+        container = QWidget()
+        self._central_layout = QHBoxLayout(container)
+        self._central_layout.setContentsMargins(12, 12, 12, 12)
+        self._central_layout.setSpacing(6)
+        self._central_layout.addWidget(self.left_rail)
+        self._central_layout.addWidget(self.splitter, 1)
+        self._central_layout.addWidget(self.right_rail)
+        self.setCentralWidget(container)
+
+    def _make_rail(self, glyph: str, tooltip: str) -> QPushButton:
+        rail = QPushButton(glyph)
+        rail.setObjectName("Rail")
+        rail.setToolTip(tooltip)
+        rail.setCursor(Qt.PointingHandCursor)
+        rail.setFixedWidth(20)
+        rail.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        rail.setVisible(False)
+        return rail
+
+    def _build_import_panel(self) -> QWidget:
+        frame, layout, self._import_collapse_btn = _panel("Import", "\u00ab")
+
+        self.paste_box = QPlainTextEdit()
+        self.paste_box.setPlaceholderText(
+            "Paste raw ticket notes here, then click Parse.\n\n"
+            "Examples:\n"
+            "Client Name: John Doe\n"
+            "Customer Name: (empty)\n"
+            "TICKET ID:\nINC12345"
+        )
+        self.paste_box.setAccessibleName("Raw notes paste area")
+        layout.addWidget(self.paste_box, 1)
+
+        buttons = QHBoxLayout()
+        self.parse_btn = QPushButton("Parse")
+        self.parse_btn.setObjectName("Primary")
+        self.parse_btn.setToolTip("Replace the form with fields parsed from the paste area")
+        self.merge_btn = QPushButton("Merge")
+        self.merge_btn.setToolTip("Add or update fields from the paste area without clearing the form")
+        self.new_btn = QPushButton("New note")
+        self.new_btn.setToolTip("Clear the paste area and the form (Ctrl+N)")
+        buttons.addWidget(self.parse_btn)
+        buttons.addWidget(self.merge_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(self.new_btn)
+        layout.addLayout(buttons)
+
+        self.templates_btn = QPushButton("Templates\u2026")
+        self.templates_btn.setToolTip("Browse built-in note templates")
+        layout.addWidget(self.templates_btn)
+
+        self.status_label = QLabel("Paste notes and click Parse to begin.")
+        self.status_label.setObjectName("StatusLabel")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.parse_btn.clicked.connect(self.on_parse)
+        self.merge_btn.clicked.connect(self.on_merge)
+        self.new_btn.clicked.connect(self.on_new_note)
+        self.templates_btn.clicked.connect(self.on_templates)
+
+        return frame
+
+    def _build_form_panel(self) -> QWidget:
+        frame, layout, _ = _panel("Form")
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.rows_container = QWidget()
+        self.rows_layout = QVBoxLayout(self.rows_container)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(8)
+        self.rows_layout.addStretch(1)
+        self.scroll.setWidget(self.rows_container)
+
+        self.empty_state = QLabel("No fields yet.\nParse a note or add a field to get started.")
+        self.empty_state.setObjectName("EmptyState")
+        self.empty_state.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(self.empty_state)
+        layout.addWidget(self.scroll, 1)
+
+        self.add_field_btn = QPushButton("+ Add field")
+        self.add_field_btn.setToolTip("Append a new empty field")
+        self.add_field_btn.clicked.connect(self.on_add_field)
+        layout.addWidget(self.add_field_btn)
+
+        return frame
+
+    def _build_export_panel(self) -> QWidget:
+        frame, layout, self._export_collapse_btn = _panel("Export", "\u00bb")
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Format:"))
+        self.format_combo = QComboBox()
+        for mode_id, label in EXPORT_MODES:
+            self.format_combo.addItem(label, mode_id)
+        self.format_combo.setAccessibleName("Export format")
+        controls.addWidget(self.format_combo, 1)
+        layout.addLayout(controls)
+
+        self.blank_check = QCheckBox("Blank line between fields")
+        layout.addWidget(self.blank_check)
+
+        layout.addWidget(QLabel("Live preview:"))
+        self.preview = QPlainTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setAccessibleName("Export preview")
+        layout.addWidget(self.preview, 1)
+
+        out_buttons = QHBoxLayout()
+        self.copy_btn = QPushButton("Copy text")
+        self.copy_btn.setToolTip("Copy the preview to the clipboard")
+        self.save_btn = QPushButton("Save .txt")
+        self.save_btn.setObjectName("Primary")
+        self.save_btn.setToolTip("Save the preview to a text file (Ctrl+S)")
+        out_buttons.addWidget(self.copy_btn)
+        out_buttons.addStretch(1)
+        out_buttons.addWidget(self.save_btn)
+        layout.addLayout(out_buttons)
+
+        self.format_combo.currentIndexChanged.connect(self._on_export_options_changed)
+        self.blank_check.stateChanged.connect(self._on_export_options_changed)
+        self.copy_btn.clicked.connect(self.on_copy)
+        self.save_btn.clicked.connect(self.on_save)
+
+        return frame
+
+    def _build_menu(self):
+        menubar = self.menuBar()
+
+        file_menu = menubar.addMenu("&File")
+        new_action = QAction("&New Note", self)
+        new_action.setShortcut(QKeySequence.New)  # Ctrl+N
+        new_action.triggered.connect(self.on_new_note)
+        file_menu.addAction(new_action)
+
+        save_action = QAction("&Save Export\u2026", self)
+        save_action.setShortcut(QKeySequence.Save)  # Ctrl+S
+        save_action.triggered.connect(self.on_save)
+        file_menu.addAction(save_action)
+
+        copy_action = QAction("&Copy Export", self)
+        copy_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        copy_action.triggered.connect(self.on_copy)
+        file_menu.addAction(copy_action)
+
+        file_menu.addSeparator()
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        view_menu = menubar.addMenu("&View")
+        theme_menu = view_menu.addMenu("&Theme")
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+        self._theme_actions = {}
+        for theme_id, label in themes.THEME_CHOICES:
+            action = QAction(label, self, checkable=True)
+            action.triggered.connect(lambda _=False, t=theme_id: self.set_theme(t))
+            self.theme_group.addAction(action)
+            theme_menu.addAction(action)
+            self._theme_actions[theme_id] = action
+
+        # Panel + preferences actions. Their shortcuts stay active because they
+        # live in the Preferences menu below.
+        self.act_import = QAction("Show &Import Panel", self, checkable=True)
+        self.act_import.setChecked(True)
+        self.act_import.setShortcut(QKeySequence("Ctrl+1"))
+        self.act_import.toggled.connect(self._on_import_toggled)
+
+        self.act_export = QAction("Show &Export Panel", self, checkable=True)
+        self.act_export.setChecked(True)
+        self.act_export.setShortcut(QKeySequence("Ctrl+3"))
+        self.act_export.toggled.connect(self._on_export_toggled)
+
+        self.act_prefs = QAction("&Preferences\u2026", self)
+        self.act_prefs.setShortcut(QKeySequence("Ctrl+,"))
+        self.act_prefs.triggered.connect(self.open_preferences)
+
+        prefs_menu = menubar.addMenu("&Preferences")
+        prefs_menu.addAction(self.act_prefs)
+        prefs_menu.addSeparator()
+        prefs_menu.addAction(self.act_import)
+        prefs_menu.addAction(self.act_export)
+
+        help_menu = menubar.addMenu("&Help")
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+        self._import_collapse_btn.clicked.connect(lambda: self.act_import.setChecked(False))
+        self._export_collapse_btn.clicked.connect(lambda: self.act_export.setChecked(False))
+
+        # Version shown on the far right of the menu-bar row.
+        self.version_label = QLabel(f"v{__version__}")
+        self.version_label.setObjectName("VersionLabel")
+        self.version_label.setToolTip("Version")
+        menubar.setCornerWidget(self.version_label, Qt.TopRightCorner)
+
+    # ------------------------------------------------------------- panels
+
+    def _on_import_toggled(self, visible: bool):
+        self.import_panel.setVisible(visible)
+        self._update_rails()
+
+    def _on_export_toggled(self, visible: bool):
+        self.export_panel.setVisible(visible)
+        self._update_rails()
+
+    def _update_rails(self):
+        # Use the toggle state (not isVisible(), which is False before the
+        # window is first shown and would wrongly show the rails at startup).
+        self.left_rail.setVisible(
+            self.persistent_sidebars and not self.act_import.isChecked()
+        )
+        self.right_rail.setVisible(
+            self.persistent_sidebars and not self.act_export.isChecked()
+        )
+
+    def open_preferences(self):
+        dialog = PreferencesDialog(
+            self,
+            persistent_sidebars=self.persistent_sidebars,
+            compact=self.compact,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        self.persistent_sidebars = values["persistent_sidebars"]
+        self.compact = values["compact"]
+        self.settings["persistent_sidebars"] = self.persistent_sidebars
+        self.settings["compact"] = self.compact
+        self._apply_density()
+        self.set_theme(self.current_theme)  # re-apply stylesheet (compact-aware) + save
+        self._update_rails()
+
+    def _apply_density(self):
+        margin = 4 if self.compact else 12
+        self._central_layout.setContentsMargins(margin, margin, margin, margin)
+
+    # -------------------------------------------------------------- actions
+
+    def on_parse(self):
+        fields = parse_notes(self.paste_box.toPlainText())
+        self._set_fields(fields)
+        self._set_status(f"Parsed {len(fields)} field{'s' if len(fields) != 1 else ''}.")
+        self._schedule_save()
+
+    def on_merge(self):
+        incoming = parse_notes(self.paste_box.toPlainText())
+        if not incoming:
+            self._set_status("Nothing to merge - the paste area has no recognisable fields.")
+            return
+        merged, added, updated = merge_fields(self.collect_fields(), incoming)
+        self._set_fields(merged)
+        self._set_status(f"Merged: {added} added, {updated} updated.")
+        self._schedule_save()
+
+    def on_new_note(self):
+        if self.collect_fields() or self.paste_box.toPlainText().strip():
+            reply = QMessageBox.question(
+                self,
+                "New Note",
+                "Clear the paste area and the form?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self.paste_box.clear()
+        self._set_fields([])
+        self._set_status("Started a new note.")
+        self._schedule_save()
+        self.paste_box.setFocus()
+
+    def on_add_field(self):
+        self._add_row(Field("", ""))
+        self._update_empty_state()
+        self._update_preview()
+        self.field_rows[-1].focus_label()
+        self._schedule_save()
+
+    def on_templates(self):
+        note_text = self.preview.toPlainText()
+        if not note_text.strip():
+            note_text = self.paste_box.toPlainText()
+        dialog = TemplatesDialog(self, current_note_text=note_text)
+        dialog.loadRequested.connect(self._load_template_text)
+        dialog.loadAndParseRequested.connect(self._load_and_parse_template_text)
+        dialog.exec()
+
+    def _load_template_text(self, text: str):
+        self.paste_box.setPlainText(text)
+        self._set_status("Template loaded into the paste area. Click Parse to build the form.")
+        self.paste_box.setFocus()
+
+    def _load_and_parse_template_text(self, text: str):
+        self.paste_box.setPlainText(text)
+        self.on_parse()
+
+    def on_copy(self):
+        text = self.preview.toPlainText()
+        QApplication.clipboard().setText(text)
+        self._set_status("Export copied to clipboard.")
+
+    def on_save(self):
+        text = self.preview.toPlainText()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save notes as text", "notes.txt", "Text files (*.txt);;All files (*.*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            self._set_status(f"Saved to {path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Save failed", f"Could not save the file:\n{exc}")
+
+    # ---------------------------------------------------------------- theme
+
+    def set_theme(self, theme_id: str):
+        self.current_theme = theme_id
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(themes.build_stylesheet(theme_id, self.compact))
+        action = self._theme_actions.get(theme_id)
+        if action and not action.isChecked():
+            action.setChecked(True)
+        self.settings["theme"] = theme_id
+        self.settings["persistent_sidebars"] = self.persistent_sidebars
+        self.settings["compact"] = self.compact
+        storage.save_settings(self.settings)
+
+    # ----------------------------------------------------------- form model
+
+    def _add_row(self, field: Field):
+        row = FieldRow(field)
+        row.changed.connect(self._on_row_changed)
+        row.removeRequested.connect(self._remove_row)
+        row.copied.connect(self._on_row_copied)
+        # Insert before the trailing stretch item.
+        self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
+        self.field_rows.append(row)
+
+    def _remove_row(self, row: FieldRow):
+        if row in self.field_rows:
+            self.field_rows.remove(row)
+        self.rows_layout.removeWidget(row)
+        row.deleteLater()
+        self._update_empty_state()
+        self._update_preview()
+        self._schedule_save()
+
+    def _set_fields(self, fields: List[Field]):
+        for row in list(self.field_rows):
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+        self.field_rows.clear()
+        for field in fields:
+            self._add_row(field)
+        self._update_empty_state()
+        self._update_preview()
+
+    def collect_fields(self) -> List[Field]:
+        fields = []
+        for row in self.field_rows:
+            f = row.to_field()
+            if f.label.strip() or f.value.strip():
+                fields.append(f)
+        return fields
+
+    def _on_row_changed(self):
+        self._update_preview()
+        self._schedule_save()
+
+    def _on_row_copied(self, label: str):
+        self._set_status(f"Copied value of '{label}' to clipboard.")
+
+    def _update_empty_state(self):
+        has_rows = bool(self.field_rows)
+        self.empty_state.setVisible(not has_rows)
+        self.scroll.setVisible(has_rows)
+
+    # ------------------------------------------------------------- preview
+
+    def _on_export_options_changed(self, *_):
+        self._update_preview()
+        self._schedule_save()
+
+    def _current_export_mode(self) -> str:
+        return self.format_combo.currentData() or MODE_SAME_LINE
+
+    def _update_preview(self):
+        text = exporter.format_output(
+            self.collect_fields(),
+            mode=self._current_export_mode(),
+            blank_between=self.blank_check.isChecked(),
+        )
+        self.preview.setPlainText(text)
+
+    def _set_status(self, message: str):
+        self.status_label.setText(message)
+
+    # --------------------------------------------------------- persistence
+
+    def _schedule_save(self):
+        self._save_timer.start()
+
+    def _persist_draft(self):
+        storage.save_draft(
+            self.collect_fields(),
+            self.paste_box.toPlainText(),
+            self._current_export_mode(),
+            self.blank_check.isChecked(),
+        )
+
+    def _load_state(self):
+        self.settings = storage.load_settings()
+        self.persistent_sidebars = bool(self.settings.get("persistent_sidebars", True))
+        self.compact = bool(self.settings.get("compact", False))
+        theme = self.settings.get("theme", themes.THEME_SYSTEM)
+        self._apply_density()
+        self.set_theme(theme)
+        self._update_rails()
+
+        draft = storage.load_draft()
+        self.paste_box.setPlainText(draft.get("raw_import", ""))
+
+        mode = draft.get("export_mode")
+        if mode:
+            idx = self.format_combo.findData(mode)
+            if idx >= 0:
+                self.format_combo.setCurrentIndex(idx)
+        blank = draft.get("blank_between")
+        if blank is not None:
+            self.blank_check.setChecked(bool(blank))
+
+        self._set_fields(draft.get("fields", []))
+        if draft.get("fields"):
+            self._set_status(f"Restored draft with {len(draft['fields'])} field(s).")
+
+    # -------------------------------------------------------------- dialogs
+
+    def _show_about(self):
+        from . import __version__
+
+        QMessageBox.about(
+            self,
+            f"About {APP_NAME}",
+            f"<b>{APP_NAME}</b> v{__version__}<br><br>"
+            "Parse messy plain-text ticket notes into an editable form, "
+            "then export clean plain text.<br><br>"
+            f"Drafts are saved to:<br><code>{storage.app_data_dir()}</code>",
+        )
+
+    # --------------------------------------------------------------- events
+
+    def closeEvent(self, event):
+        self._persist_draft()
+        super().closeEvent(event)
