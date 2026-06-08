@@ -57,7 +57,10 @@ def _write_json(path: Path, data: Dict[str, Any]) -> None:
 def save_draft(fields: List[Field], raw_import: str, export_mode: str,
                blank_between: bool) -> None:
     data = {
-        "fields": [{"label": f.label, "value": f.value} for f in fields],
+        "fields": [
+            {"label": f.label, "value": f.value, "export_mode": f.export_mode}
+            for f in fields
+        ],
         "raw_import": raw_import,
         "export_mode": export_mode,
         "blank_between": blank_between,
@@ -70,7 +73,11 @@ def load_draft() -> Dict[str, Any]:
     fields = []
     for item in data.get("fields", []):
         if isinstance(item, dict):
-            fields.append(Field(label=item.get("label", ""), value=item.get("value", "")))
+            fields.append(Field(
+                label=item.get("label", ""),
+                value=item.get("value", ""),
+                export_mode=item.get("export_mode", ""),
+            ))
     return {
         "fields": fields,
         "raw_import": data.get("raw_import", ""),

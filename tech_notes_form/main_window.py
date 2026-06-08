@@ -29,7 +29,17 @@ from . import APP_NAME, __version__
 from . import exporter, storage, themes
 from .exporter import EXPORT_MODES, MODE_SAME_LINE
 from .parser import Field, merge_fields, parse_notes
-from .widgets import FieldRow, PreferencesDialog, TemplatesDialog
+from .templates import resolve_template, template_choices
+from .widgets import (
+    FieldRow,
+    ImportPasteEdit,
+    PARSE_MODE_MERGE,
+    PARSE_MODE_PARSE,
+    PreferencesDialog,
+    TemplatesDialog,
+)
+
+DEFAULT_SPLITTER_SIZES = [260, 760, 300]
 
 
 def _panel(title: str, collapse_glyph: str | None = None):
@@ -75,6 +85,14 @@ class MainWindow(QMainWindow):
         self.settings: dict = {}
         self.persistent_sidebars = True
         self.compact = False
+        self.confirm_clear_values = True
+        self.import_panel_visible = True
+        self.export_panel_visible = True
+        self.remember_splitter_sizes = True
+        self.default_template_id = ""
+        self.auto_parse_on_paste = False
+        self.default_parse_mode = PARSE_MODE_PARSE
+        self.default_export_mode = MODE_SAME_LINE
 
         # Debounced auto-save timer.
         self._save_timer = QTimer(self)
@@ -89,6 +107,11 @@ class MainWindow(QMainWindow):
         self._preview_sync_timer.setInterval(450)
         self._preview_sync_timer.setSingleShot(True)
         self._preview_sync_timer.timeout.connect(self._sync_form_from_preview)
+
+        self._splitter_save_timer = QTimer(self)
+        self._splitter_save_timer.setInterval(400)
+        self._splitter_save_timer.setSingleShot(True)
+        self._splitter_save_timer.timeout.connect(self._persist_splitter_sizes)
 
         self._build_ui()
         self._build_menu()
@@ -112,7 +135,8 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([260, 760, 300])
+        self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
         for panel in (self.import_panel, self.form_panel, self.export_panel):
             panel.setMinimumWidth(0)
 
@@ -145,7 +169,7 @@ class MainWindow(QMainWindow):
     def _build_import_panel(self) -> QWidget:
         frame, layout, self._import_collapse_btn = _panel("Import", "\u00ab")
 
-        self.paste_box = QPlainTextEdit()
+        self.paste_box = ImportPasteEdit()
         self.paste_box.setPlaceholderText(
             "Paste raw ticket notes here, then click Parse.\n\n"
             "Examples:\n"
@@ -162,10 +186,18 @@ class MainWindow(QMainWindow):
         self.parse_btn.setToolTip("Replace the form with fields parsed from the paste area")
         self.merge_btn = QPushButton("Merge")
         self.merge_btn.setToolTip("Add or update fields from the paste area without clearing the form")
+        self.prefix_dash_btn = QPushButton("-")
+        self.prefix_dash_btn.setObjectName("IconButton")
+        self.prefix_dash_btn.setToolTip(
+            "Prefix \"- \" on each line of the selected text"
+        )
+        self.prefix_dash_btn.setAccessibleName("Prefix dash on selected lines")
+        self.prefix_dash_btn.setCursor(Qt.PointingHandCursor)
         self.new_btn = QPushButton("New note")
         self.new_btn.setToolTip("Clear the paste area and the form (Ctrl+N)")
         buttons.addWidget(self.parse_btn)
         buttons.addWidget(self.merge_btn)
+        buttons.addWidget(self.prefix_dash_btn)
         buttons.addStretch(1)
         buttons.addWidget(self.new_btn)
         layout.addLayout(buttons)
@@ -181,8 +213,10 @@ class MainWindow(QMainWindow):
 
         self.parse_btn.clicked.connect(self.on_parse)
         self.merge_btn.clicked.connect(self.on_merge)
+        self.prefix_dash_btn.clicked.connect(self.on_prefix_dash_lines)
         self.new_btn.clicked.connect(self.on_new_note)
         self.templates_btn.clicked.connect(self.on_templates)
+        self.paste_box.pasted.connect(self._on_import_pasted)
 
         return frame
 
@@ -365,23 +399,158 @@ class MainWindow(QMainWindow):
             self,
             persistent_sidebars=self.persistent_sidebars,
             compact=self.compact,
+            confirm_clear_values=self.confirm_clear_values,
+            import_panel_visible=self.import_panel_visible,
+            export_panel_visible=self.export_panel_visible,
+            remember_splitter_sizes=self.remember_splitter_sizes,
+            default_template_id=self.default_template_id,
+            template_choices=template_choices(),
+            auto_parse_on_paste=self.auto_parse_on_paste,
+            default_parse_mode=self.default_parse_mode,
+            default_export_mode=self.default_export_mode,
+            export_mode_choices=EXPORT_MODES,
         )
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
         self.persistent_sidebars = values["persistent_sidebars"]
         self.compact = values["compact"]
-        self.settings["persistent_sidebars"] = self.persistent_sidebars
-        self.settings["compact"] = self.compact
+        self.confirm_clear_values = values["confirm_clear_values"]
+        self.import_panel_visible = values["import_panel_visible"]
+        self.export_panel_visible = values["export_panel_visible"]
+        self.remember_splitter_sizes = values["remember_splitter_sizes"]
+        self.default_template_id = values["default_template_id"]
+        self.auto_parse_on_paste = values["auto_parse_on_paste"]
+        self.default_parse_mode = values["default_parse_mode"]
+        self.default_export_mode = values["default_export_mode"]
+        self.act_import.setChecked(self.import_panel_visible)
+        self.act_export.setChecked(self.export_panel_visible)
+        self._apply_default_export_mode_from_settings()
+        if not self.remember_splitter_sizes:
+            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
         self._apply_density()
         self.set_theme(self.current_theme)  # re-apply stylesheet (compact-aware) + save
         self._update_rails()
+        self._save_settings()
 
     def _apply_density(self):
         margin = 4 if self.compact else 12
         self._central_layout.setContentsMargins(margin, margin, margin, margin)
 
+    def _load_preferences_from_settings(self):
+        s = self.settings
+        self.persistent_sidebars = bool(s.get("persistent_sidebars", True))
+        self.compact = bool(s.get("compact", False))
+        self.confirm_clear_values = bool(s.get("confirm_clear_values", True))
+        self.import_panel_visible = bool(s.get("import_panel_visible", True))
+        self.export_panel_visible = bool(s.get("export_panel_visible", True))
+        self.remember_splitter_sizes = bool(s.get("remember_splitter_sizes", True))
+        self.default_template_id = s.get("default_template_id", "") or ""
+        self.auto_parse_on_paste = bool(s.get("auto_parse_on_paste", False))
+        self.default_parse_mode = s.get("default_parse_mode", PARSE_MODE_PARSE)
+        self.default_export_mode = s.get("default_export_mode", MODE_SAME_LINE)
+
+    def _save_settings(self):
+        self.settings.update({
+            "theme": self.current_theme,
+            "persistent_sidebars": self.persistent_sidebars,
+            "compact": self.compact,
+            "confirm_clear_values": self.confirm_clear_values,
+            "import_panel_visible": self.import_panel_visible,
+            "export_panel_visible": self.export_panel_visible,
+            "remember_splitter_sizes": self.remember_splitter_sizes,
+            "default_template_id": self.default_template_id,
+            "auto_parse_on_paste": self.auto_parse_on_paste,
+            "default_parse_mode": self.default_parse_mode,
+            "default_export_mode": self.default_export_mode,
+        })
+        if self.remember_splitter_sizes:
+            self.settings["splitter_sizes"] = self.splitter.sizes()
+        storage.save_settings(self.settings)
+
+    def _apply_panel_visibility(self):
+        self.act_import.blockSignals(True)
+        self.act_export.blockSignals(True)
+        self.act_import.setChecked(self.import_panel_visible)
+        self.act_export.setChecked(self.export_panel_visible)
+        self.act_import.blockSignals(False)
+        self.act_export.blockSignals(False)
+        self.import_panel.setVisible(self.import_panel_visible)
+        self.export_panel.setVisible(self.export_panel_visible)
+
+    def _apply_splitter_sizes(self):
+        if not self.remember_splitter_sizes:
+            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+            return
+        sizes = self.settings.get("splitter_sizes")
+        if isinstance(sizes, list) and len(sizes) == 3:
+            self.splitter.setSizes(sizes)
+        else:
+            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+
+    def _on_splitter_moved(self, *_):
+        if self.remember_splitter_sizes:
+            self._splitter_save_timer.start()
+
+    def _persist_splitter_sizes(self):
+        if not self.remember_splitter_sizes:
+            return
+        self.settings["splitter_sizes"] = self.splitter.sizes()
+        storage.save_settings(self.settings)
+
+    def _apply_default_export_mode_from_settings(self):
+        idx = self.format_combo.findData(self.default_export_mode)
+        if idx >= 0:
+            self.format_combo.setCurrentIndex(idx)
+
+    def _run_default_parse(self):
+        if self.default_parse_mode == PARSE_MODE_MERGE:
+            self.on_merge()
+        else:
+            self.on_parse()
+
+    def _apply_default_template(self) -> bool:
+        tpl = resolve_template(self.default_template_id)
+        if tpl is None:
+            return False
+        self.paste_box.setPlainText(tpl.sample)
+        self._run_default_parse()
+        return True
+
+    def _on_import_pasted(self):
+        if self.auto_parse_on_paste:
+            self._run_default_parse()
+
     # -------------------------------------------------------------- actions
+
+    def on_prefix_dash_lines(self):
+        cursor = self.paste_box.textCursor()
+        if not cursor.hasSelection():
+            self._set_status('Select text in the paste area, then click Prefix "-".')
+            return
+
+        # QPlainTextEdit uses U+2029 between lines in selectedText().
+        raw = cursor.selectedText().replace("\u2029", "\n")
+        prefixed: list[str] = []
+        changed = 0
+        for line in raw.splitlines():
+            stripped = line.lstrip()
+            if not stripped:
+                prefixed.append(line)
+                continue
+            if stripped.startswith("-"):
+                prefixed.append(line)
+                continue
+            indent = line[: len(line) - len(stripped)]
+            prefixed.append(f"{indent}- {stripped}")
+            changed += 1
+
+        cursor.insertText("\n".join(prefixed))
+        self._schedule_save()
+        if changed:
+            self._set_status(f'Prefixed {changed} line{"s" if changed != 1 else ""} with "-".')
+        else:
+            self._set_status("Selected lines already start with \"-\".")
 
     def on_parse(self):
         fields = parse_notes(self.paste_box.toPlainText())
@@ -412,7 +581,11 @@ class MainWindow(QMainWindow):
                 return
         self.paste_box.clear()
         self._set_fields([])
-        self._set_status("Started a new note.")
+        self._apply_default_export_mode_from_settings()
+        if self._apply_default_template():
+            self._set_status("Started a new note from the default template.")
+        else:
+            self._set_status("Started a new note.")
         self._schedule_save()
         self.paste_box.setFocus()
 
@@ -430,7 +603,7 @@ class MainWindow(QMainWindow):
         has_values = any(
             row.to_field().value.strip() for row in self.field_rows
         )
-        if has_values:
+        if has_values and self.confirm_clear_values:
             reply = QMessageBox.question(
                 self,
                 "Clear values",
@@ -496,15 +669,12 @@ class MainWindow(QMainWindow):
         action = self._theme_actions.get(theme_id)
         if action and not action.isChecked():
             action.setChecked(True)
-        self.settings["theme"] = theme_id
-        self.settings["persistent_sidebars"] = self.persistent_sidebars
-        self.settings["compact"] = self.compact
-        storage.save_settings(self.settings)
+        self._save_settings()
 
     # ----------------------------------------------------------- form model
 
     def _add_row(self, field: Field):
-        row = FieldRow(field)
+        row = FieldRow(field, default_export_mode=self._current_export_mode())
         row.changed.connect(self._on_row_changed)
         row.removeRequested.connect(self._remove_row)
         row.copied.connect(self._on_row_copied)
@@ -616,28 +786,36 @@ class MainWindow(QMainWindow):
 
     def _load_state(self):
         self.settings = storage.load_settings()
-        self.persistent_sidebars = bool(self.settings.get("persistent_sidebars", True))
-        self.compact = bool(self.settings.get("compact", False))
+        self._load_preferences_from_settings()
         theme = self.settings.get("theme", themes.THEME_SYSTEM)
         self._apply_density()
+        self._apply_panel_visibility()
+        self._apply_splitter_sizes()
         self.set_theme(theme)
         self._update_rails()
 
         draft = storage.load_draft()
         self.paste_box.setPlainText(draft.get("raw_import", ""))
 
-        mode = draft.get("export_mode")
-        if mode:
-            idx = self.format_combo.findData(mode)
-            if idx >= 0:
-                self.format_combo.setCurrentIndex(idx)
+        mode = draft.get("export_mode") or self.default_export_mode
+        idx = self.format_combo.findData(mode)
+        if idx >= 0:
+            self.format_combo.setCurrentIndex(idx)
         blank = draft.get("blank_between")
         if blank is not None:
             self.blank_check.setChecked(bool(blank))
 
-        self._set_fields(draft.get("fields", []))
-        if draft.get("fields"):
-            self._set_status(f"Restored draft with {len(draft['fields'])} field(s).")
+        fields = draft.get("fields", [])
+        if fields:
+            self._set_fields(fields)
+            self._set_status(f"Restored draft with {len(fields)} field(s).")
+        elif not draft.get("raw_import", "").strip():
+            if self._apply_default_template():
+                self._set_status("Loaded the default template.")
+            else:
+                self._set_fields([])
+        else:
+            self._set_fields([])
 
     # -------------------------------------------------------------- dialogs
 

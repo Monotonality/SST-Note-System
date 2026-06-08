@@ -42,7 +42,7 @@ plain text. Field names vary by team, so parsing is intentionally forgiving.
 
 ### Parsing rules (all supported, mixable in one paste)
 - Same-line: `Client Name: John Doe`
-- Empty markers: `Customer Name: (empty)` or a blank value
+- Values are preserved as written (`N/A`, `(empty)`, `-`, etc. are not rewritten)
 - Label block (label line, optional blank line, value on the next line):
 
   ```
@@ -75,9 +75,10 @@ persist across launches.
   mirrored back into the form (and vice-versa).
 
 ### Themes
-Dark, Light, System (follows Windows), Ocean, Warm, Super Dark (near-black with
-light-blue text), and Forest. Choose from **View ▸ Theme**; the preference is
-remembered.
+**System** (follows Windows), Dark, Light, Ocean, Warm, Super Dark, Forest,
+**Matrix** (phosphor green on black), **Dallas** (ultra-dark with light-blue neon),
+**JoeGreen** (calm sage forest), and **RedEye** (ultra-dark with neon red). Choose from
+**View ▸ Theme**; the preference is remembered.
 
 ---
 
@@ -149,20 +150,33 @@ Help), the shortcuts below, to give the Form even more room. The current
 fit their content as you type.
 
 ## Preferences
-Open **Preferences** from the menu-bar row or `Ctrl+,`:
-- **Persistent sidebars** *(on by default)* — when a side panel is collapsed,
-  keep a thin reopen button (`›` / `‹`) docked on that edge so you can bring it
-  back instantly.
-- **Compact mode** — tighter spacing and fonts so the app stays usable in small
-  / narrow windows. The minimum window size is also small for tight areas.
+Open **Preferences** from the **Preferences** menu or `Ctrl+,`:
 
-The **theme** (Dark / Light / System / Ocean / Warm / Super Dark / Forest) is
-chosen from **View ▸ Theme**. Preferences and theme are saved to `settings.json`
-and restored on the next launch.
+**Appearance**
+- **Persistent sidebars** — reopen buttons when a side panel is collapsed
+- **Compact mode** — tighter spacing and fonts
+
+**Form**
+- **Confirm before Clear values** — ask before emptying all field values
+
+**Layout**
+- **Default panel visibility** — whether Import / Export start open
+- **Remember splitter sizes** — save panel widths between sessions
+
+**Import & templates**
+- **Default template** — loaded on New note and on first launch (when no draft)
+- **Auto-parse on paste** — parse or merge when you paste into Import
+- **Default parse mode** — Parse (replace) or Merge (add/update)
+
+**Export**
+- **Default export format** — same-line or label-block (also used for new notes)
+
+The **theme** is chosen from **View ▸ Theme** (System is listed first). Preferences
+and theme are saved to `settings.json` and restored on the next launch.
 
 ## Versioning
 The app follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`,
-currently `v1.2.0`), shown on the far right of the menu-bar row.
+currently `v1.3.0`), shown on the far right of the menu-bar row.
 
 ## Keyboard shortcuts
 - `Ctrl+N` — New note

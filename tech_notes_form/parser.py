@@ -3,8 +3,7 @@
 Supported layouts (mixable within a single paste):
 
 1. Same-line ............ ``Client Name: John Doe``
-2. Empty markers ........ ``Customer Name: (empty)`` or a blank value
-3. Label block .......... a label line ending in ``:`` followed (after an
+2. Label block .......... a label line ending in ``:`` followed (after an
    optional blank line) by the value on the next line::
 
        TICKET ID:
@@ -28,19 +27,9 @@ _LABEL_RE = re.compile(r"^\s*(?P<label>[^:]+?)\s*:\s*(?P<value>.*?)\s*$")
 # Maximum length of a label before we stop treating the line as a field.
 _MAX_LABEL_LEN = 60
 
-# Values that should be normalised to an empty string.
-_EMPTY_MARKERS = {
-    "(empty)",
-    "(none)",
-    "(blank)",
-    "(n/a)",
-    "n/a",
-    "na",
-    "none",
-    "-",
-    "--",
-    "—",
-}
+# Per-field export layout (also used by the exporter and form rows).
+MODE_SAME_LINE = "same_line"
+MODE_LABEL_BLOCK = "label_block"
 
 
 @dataclass
@@ -49,6 +38,9 @@ class Field:
 
     label: str = ""
     value: str = ""
+    # ``same_line`` -> ``Label: value``; ``label_block`` -> label line then value.
+    # Empty string means "use the export panel's default format".
+    export_mode: str = ""
 
     def normalised_label(self) -> str:
         return self.label.strip().lower()
@@ -70,10 +62,45 @@ def _is_label_line(line: str):
     return label, value
 
 
-def _normalise_value(value: str) -> str:
-    if value.strip().lower() in _EMPTY_MARKERS:
-        return ""
-    return value.strip()
+def _collect_block_value(lines: List[str], start: int) -> tuple[str, int]:
+    """Read a multi-line value starting at *start*.
+
+    Consumes lines until the next recognised label line. Blank lines between
+    value lines are preserved; trailing blanks are dropped. Returns
+    ``(value, next_index)`` where *next_index* is the first unconsumed line.
+    """
+    parts: List[str] = []
+    j = start
+    n = len(lines)
+    while j < n:
+        line = lines[j]
+        if line.strip() and _is_label_line(line) is not None:
+            break
+        if not line.strip():
+            k = j + 1
+            while k < n and not lines[k].strip():
+                k += 1
+            if k < n and _is_label_line(lines[k]) is not None:
+                break
+            if parts:
+                parts.append("")
+        else:
+            parts.append(line.rstrip())
+        j += 1
+    while parts and not parts[-1]:
+        parts.pop()
+    return "\n".join(parts), j
+
+
+def _append_continuation(field: Field, line: str) -> None:
+    """Append an orphan line to *field*'s value, preserving line breaks."""
+    extra = line.rstrip()
+    if not extra:
+        return
+    if field.value:
+        field.value = f"{field.value}\n{extra}"
+    else:
+        field.value = extra
 
 
 def parse_notes(text: str) -> List[Field]:
@@ -96,31 +123,34 @@ def parse_notes(text: str) -> List[Field]:
         if parsed is not None:
             label, value = parsed
             if value == "":
-                # Possible label block: look ahead past blank lines.
+                # Label block: collect every following line until the next field.
                 j = i + 1
                 while j < n and not lines[j].strip():
                     j += 1
                 if j < n and _is_label_line(lines[j]) is None:
-                    # Next non-blank line is a bare value for this label.
-                    fields.append(Field(label=label, value=_normalise_value(lines[j])))
-                    i = j + 1
+                    block_value, j = _collect_block_value(lines, j)
+                    fields.append(Field(
+                        label=label,
+                        value=block_value,
+                        export_mode=MODE_LABEL_BLOCK,
+                    ))
+                    i = j
                     continue
-                # Either end of text or the next line is its own field.
-                fields.append(Field(label=label, value=""))
+                fields.append(Field(label=label, value="", export_mode=MODE_LABEL_BLOCK))
                 i += 1
                 continue
 
-            fields.append(Field(label=label, value=_normalise_value(value)))
+            fields.append(Field(
+                label=label,
+                value=value,
+                export_mode=MODE_SAME_LINE,
+            ))
             i += 1
             continue
 
-        # Orphan line (no colon) -> treat as a continuation of the last value.
+        # Orphan line (no colon) -> continuation of the previous value.
         if fields:
-            extra = raw.strip()
-            if fields[-1].value:
-                fields[-1].value = f"{fields[-1].value} {extra}"
-            else:
-                fields[-1].value = extra
+            _append_continuation(fields[-1], raw)
         i += 1
 
     return fields
@@ -133,7 +163,7 @@ def merge_fields(existing: List[Field], incoming: List[Field]):
     case-insensitive, trimmed label. Returns ``(merged, added, updated)`` where
     ``added``/``updated`` are counts for status reporting.
     """
-    merged = [Field(f.label, f.value) for f in existing]
+    merged = [Field(f.label, f.value, f.export_mode) for f in existing]
     index = {f.normalised_label(): idx for idx, f in enumerate(merged)}
 
     added = 0
@@ -147,7 +177,7 @@ def merge_fields(existing: List[Field], incoming: List[Field]):
                 updated += 1
         else:
             index[key] = len(merged)
-            merged.append(Field(item.label, item.value))
+            merged.append(Field(item.label, item.value, item.export_mode))
             added += 1
 
     return merged, added, updated
@@ -166,5 +196,17 @@ Agency: Acme Corp
 Notes: line one
 line two
 """
+    bullet_sample = """\
+Steps taken:
+- Remoted to another workstation
+- Tried to access the URL at https://WG-Video.LittleFallsPD.local, but the page could not be found
+- Opened a putty session and logged in with root The server IP is 10.0.0.7
+"""
     for f in parse_notes(sample):
+        print(repr(f.label), "=>", repr(f.value))
+    print("--- bullets ---")
+    for f in parse_notes(bullet_sample):
+        print(repr(f.label), "=>", repr(f.value))
+    print("--- n/a ---")
+    for f in parse_notes("Backup taken: N/A\nStatus: n/a"):
         print(repr(f.label), "=>", repr(f.value))

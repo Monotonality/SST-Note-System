@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -27,25 +29,69 @@ from PySide6.QtWidgets import (
 )
 
 from . import storage
-from .parser import Field
+from .parser import Field, MODE_LABEL_BLOCK, MODE_SAME_LINE
 from .templates import TEMPLATES, Template
+
+PARSE_MODE_PARSE = "parse"
+PARSE_MODE_MERGE = "merge"
+
+PARSE_MODE_CHOICES = [
+    (PARSE_MODE_PARSE, "Parse (replace form)"),
+    (PARSE_MODE_MERGE, "Merge (add / update fields)"),
+]
+
+
+class ImportPasteEdit(QPlainTextEdit):
+    """Import paste area that emits ``pasted`` when text is inserted from the clipboard."""
+
+    pasted = Signal()
+
+    def insertFromMimeData(self, source):
+        super().insertFromMimeData(source)
+        self.pasted.emit()
 
 
 class PreferencesDialog(QDialog):
-    """App preferences: persistent sidebars and compact density.
+    """Application preferences (theme is under View ▸ Theme)."""
 
-    (Theme is chosen from the View ▸ Theme menu.)
-    """
-
-    def __init__(self, parent=None, *, persistent_sidebars: bool, compact: bool):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        persistent_sidebars: bool,
+        compact: bool,
+        confirm_clear_values: bool,
+        import_panel_visible: bool,
+        export_panel_visible: bool,
+        remember_splitter_sizes: bool,
+        default_template_id: str,
+        template_choices: List[tuple[str, str]],
+        auto_parse_on_paste: bool,
+        default_parse_mode: str,
+        default_export_mode: str,
+        export_mode_choices: List[tuple[str, str]],
+    ):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
-        self.setMinimumWidth(420)
+        self.setMinimumSize(560, 620)
+        self.resize(600, 680)
 
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        form.setSpacing(10)
+        outer = QVBoxLayout(self)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        body = QWidget()
+        form = QFormLayout(body)
+        form.setSpacing(12)
+        form.setContentsMargins(4, 4, 4, 4)
+
+        def section(title: str):
+            heading = QLabel(title)
+            heading.setObjectName("PanelTitle")
+            form.addRow(heading)
+
+        section("Appearance")
         self.persistent_check = QCheckBox(
             "Keep a reopen button on the edge when a side panel is collapsed"
         )
@@ -58,18 +104,80 @@ class PreferencesDialog(QDialog):
         self.compact_check.setChecked(compact)
         form.addRow("Density", self.compact_check)
 
-        layout.addLayout(form)
-        layout.addStretch(1)
+        section("Form")
+        self.confirm_clear_check = QCheckBox(
+            "Ask for confirmation before clearing all field values"
+        )
+        self.confirm_clear_check.setChecked(confirm_clear_values)
+        form.addRow("Clear values", self.confirm_clear_check)
+
+        section("Layout")
+        self.import_visible_check = QCheckBox("Show Import panel when the app opens")
+        self.import_visible_check.setChecked(import_panel_visible)
+        form.addRow("Import panel", self.import_visible_check)
+
+        self.export_visible_check = QCheckBox("Show Export panel when the app opens")
+        self.export_visible_check.setChecked(export_panel_visible)
+        form.addRow("Export panel", self.export_visible_check)
+
+        self.remember_splitter_check = QCheckBox(
+            "Remember how wide the Import / Form / Export panels are"
+        )
+        self.remember_splitter_check.setChecked(remember_splitter_sizes)
+        form.addRow("Panel widths", self.remember_splitter_check)
+
+        section("Import & templates")
+        self.template_combo = QComboBox()
+        for tid, label in template_choices:
+            self.template_combo.addItem(label, tid)
+        idx = self.template_combo.findData(default_template_id or "")
+        if idx >= 0:
+            self.template_combo.setCurrentIndex(idx)
+        form.addRow("Default template", self.template_combo)
+
+        self.auto_parse_check = QCheckBox(
+            "Parse or merge automatically when text is pasted into Import"
+        )
+        self.auto_parse_check.setChecked(auto_parse_on_paste)
+        form.addRow("Auto-parse", self.auto_parse_check)
+
+        self.parse_mode_combo = QComboBox()
+        for mode_id, label in PARSE_MODE_CHOICES:
+            self.parse_mode_combo.addItem(label, mode_id)
+        pidx = self.parse_mode_combo.findData(default_parse_mode)
+        if pidx >= 0:
+            self.parse_mode_combo.setCurrentIndex(pidx)
+        form.addRow("Default parse mode", self.parse_mode_combo)
+
+        section("Export")
+        self.export_mode_combo = QComboBox()
+        for mode_id, label in export_mode_choices:
+            self.export_mode_combo.addItem(label, mode_id)
+        eidx = self.export_mode_combo.findData(default_export_mode)
+        if eidx >= 0:
+            self.export_mode_combo.setCurrentIndex(eidx)
+        form.addRow("Default export format", self.export_mode_combo)
+
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
 
     def values(self) -> dict:
         return {
             "persistent_sidebars": self.persistent_check.isChecked(),
             "compact": self.compact_check.isChecked(),
+            "confirm_clear_values": self.confirm_clear_check.isChecked(),
+            "import_panel_visible": self.import_visible_check.isChecked(),
+            "export_panel_visible": self.export_visible_check.isChecked(),
+            "remember_splitter_sizes": self.remember_splitter_check.isChecked(),
+            "default_template_id": self.template_combo.currentData() or "",
+            "auto_parse_on_paste": self.auto_parse_check.isChecked(),
+            "default_parse_mode": self.parse_mode_combo.currentData() or PARSE_MODE_PARSE,
+            "default_export_mode": self.export_mode_combo.currentData() or MODE_SAME_LINE,
         }
 
 
@@ -124,9 +232,10 @@ class FieldRow(QWidget):
     removeRequested = Signal(object)
     copied = Signal(str)
 
-    def __init__(self, field: Field, parent=None):
+    def __init__(self, field: Field, parent=None, *, default_export_mode: str = MODE_SAME_LINE):
         super().__init__(parent)
         self.setObjectName("FieldCard")
+        self._export_mode = field.export_mode or default_export_mode
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, 10, 10)
@@ -139,6 +248,14 @@ class FieldRow(QWidget):
         self.label_edit.setObjectName("FieldLabel")
         self.label_edit.setPlaceholderText("Label")
         self.label_edit.setAccessibleName("Field label")
+
+        self.format_btn = QPushButton()
+        self.format_btn.setObjectName("FormatToggle")
+        self.format_btn.setCheckable(True)
+        self.format_btn.setChecked(self._export_mode == MODE_LABEL_BLOCK)
+        self.format_btn.setAccessibleName("Toggle export format for this field")
+        self.format_btn.setCursor(Qt.PointingHandCursor)
+        self._sync_format_btn()
 
         self.copy_btn = QPushButton("\u29c9")  # overlapping squares = copy glyph
         self.copy_btn.setObjectName("IconButton")
@@ -153,6 +270,7 @@ class FieldRow(QWidget):
         self.remove_btn.setCursor(Qt.PointingHandCursor)
 
         header.addWidget(self.label_edit, 1)
+        header.addWidget(self.format_btn)
         header.addWidget(self.copy_btn)
         header.addWidget(self.remove_btn)
 
@@ -166,15 +284,37 @@ class FieldRow(QWidget):
 
         self.label_edit.textChanged.connect(self.changed)
         self.value_edit.textChanged.connect(self.changed)
+        self.format_btn.toggled.connect(self._on_format_toggled)
         self.copy_btn.clicked.connect(self._on_copy)
         self.remove_btn.clicked.connect(lambda: self.removeRequested.emit(self))
+
+    def _sync_format_btn(self):
+        if self._export_mode == MODE_LABEL_BLOCK:
+            self.format_btn.setText("\u21b5")  # ↵ label block
+            self.format_btn.setToolTip(
+                "Export: label on one line, value on the next (click for Label: value)"
+            )
+        else:
+            self.format_btn.setText(":")
+            self.format_btn.setToolTip(
+                "Export: Label: value on the same line (click for label block)"
+            )
+
+    def _on_format_toggled(self, checked: bool):
+        self._export_mode = MODE_LABEL_BLOCK if checked else MODE_SAME_LINE
+        self._sync_format_btn()
+        self.changed.emit()
 
     def _on_copy(self):
         QApplication.clipboard().setText(self.value_edit.toPlainText())
         self.copied.emit(self.label_edit.text().strip() or "field")
 
     def to_field(self) -> Field:
-        return Field(label=self.label_edit.text(), value=self.value_edit.toPlainText())
+        return Field(
+            label=self.label_edit.text(),
+            value=self.value_edit.toPlainText(),
+            export_mode=self._export_mode,
+        )
 
     def clear_value(self):
         """Empty this field's value box; the label is left unchanged."""
@@ -308,136 +448,129 @@ class TemplatesDialog(QDialog):
         self.edit_btn.clicked.connect(self._on_edit)
         self.delete_btn.clicked.connect(self._on_delete)
 
-        self.save_current_btn.setEnabled(bool(current_note_text.strip()))
+        self._reload_list()
 
-        self._reload(select_id=None)
-
-    # ------------------------------------------------------------- helpers
-
-    def _reload(self, select_id: str | None):
+    def _reload_list(self):
         self._templates = list(TEMPLATES) + storage.load_custom_templates()
-        self.list.blockSignals(True)
         self.list.clear()
-        target_row = 0
-        for idx, tpl in enumerate(self._templates):
-            label = tpl.name if tpl.builtin else f"{tpl.name}  (custom)"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, tpl.id)
-            self.list.addItem(item)
-            if select_id and tpl.id == select_id:
-                target_row = idx
-        self.list.blockSignals(False)
+        for tpl in self._templates:
+            tag = "" if tpl.builtin else " (custom)"
+            self.list.addItem(QListWidgetItem(f"{tpl.name}{tag}"))
         if self._templates:
-            self.list.setCurrentRow(target_row)
-        else:
-            self._on_select(-1)
+            self.list.setCurrentRow(0)
 
-    def _current_template(self) -> Template | None:
+    def _current(self) -> Template | None:
         row = self.list.currentRow()
-        if 0 <= row < len(self._templates):
-            return self._templates[row]
-        return None
+        if row < 0 or row >= len(self._templates):
+            return None
+        return self._templates[row]
 
-    def _custom_templates(self) -> List[Template]:
-        return [t for t in self._templates if not t.builtin]
-
-    def _persist_custom(self):
-        storage.save_custom_templates(self._custom_templates())
-
-    # ------------------------------------------------------------- selection
-
-    def _on_select(self, _row: int):
-        tpl = self._current_template()
-        is_custom = bool(tpl and not tpl.builtin)
-        self.edit_btn.setEnabled(is_custom)
-        self.delete_btn.setEnabled(is_custom)
-        if not tpl:
-            self.name_label.setText("No templates")
-            self.desc_label.setText("Create one with New or Save current note.")
-            self.preview.setPlainText("")
-            self.copy_btn.setEnabled(False)
-            self.load_btn.setEnabled(False)
-            self.load_parse_btn.setEnabled(False)
+    def _on_select(self, row: int):
+        tpl = self._templates[row] if 0 <= row < len(self._templates) else None
+        if tpl is None:
+            self.name_label.clear()
+            self.desc_label.clear()
+            self.preview.clear()
+            self.edit_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
             return
-        self.copy_btn.setEnabled(True)
-        self.load_btn.setEnabled(True)
-        self.load_parse_btn.setEnabled(True)
         self.name_label.setText(tpl.name)
-        self.desc_label.setText(tpl.description or ("Custom template" if is_custom else ""))
-        self.preview.setPlainText(tpl.sample.rstrip())
-
-    # --------------------------------------------------------------- use ops
+        self.desc_label.setText(tpl.description)
+        self.preview.setPlainText(tpl.preview())
+        self.edit_btn.setEnabled(not tpl.builtin)
+        self.delete_btn.setEnabled(not tpl.builtin)
 
     def _on_copy(self):
-        tpl = self._current_template()
+        tpl = self._current()
         if tpl:
             QApplication.clipboard().setText(tpl.sample)
+            QMessageBox.information(self, "Copied", "Template text copied to the clipboard.")
 
     def _on_load(self):
-        tpl = self._current_template()
+        tpl = self._current()
         if tpl:
             self.loadRequested.emit(tpl.sample)
             self.accept()
 
     def _on_load_parse(self):
-        tpl = self._current_template()
+        tpl = self._current()
         if tpl:
             self.loadAndParseRequested.emit(tpl.sample)
             self.accept()
 
-    # ------------------------------------------------------------ manage ops
-
-    def _create_from(self, name: str, description: str, sample: str):
-        tpl = Template(
-            id=f"custom_{uuid.uuid4().hex[:12]}",
-            name=name,
-            description=description,
-            sample=sample,
-            builtin=False,
-        )
-        self._templates.append(tpl)
-        self._persist_custom()
-        self._reload(select_id=tpl.id)
-
     def _on_new(self):
         dialog = TemplateEditDialog(self, title="New Template")
-        if dialog.exec() == QDialog.Accepted:
-            name, description, sample = dialog.values()
-            self._create_from(name, description, sample)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name, desc, sample = dialog.values()
+        custom = storage.load_custom_templates()
+        custom.append(
+            Template(
+                id=str(uuid.uuid4()),
+                name=name,
+                description=desc,
+                sample=sample,
+                builtin=False,
+            )
+        )
+        storage.save_custom_templates(custom)
+        self._reload_list()
 
     def _on_save_current(self):
-        dialog = TemplateEditDialog(
-            self,
-            template=Template("", "", "", self._current_note_text, builtin=False),
-            title="Save current note as template",
+        if not self._current_note_text.strip():
+            QMessageBox.information(
+                self, "Nothing to save", "The current note is empty."
+            )
+            return
+        dialog = TemplateEditDialog(self, title="Save Current Note as Template")
+        dialog.sample_edit.setPlainText(self._current_note_text)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name, desc, sample = dialog.values()
+        custom = storage.load_custom_templates()
+        custom.append(
+            Template(
+                id=str(uuid.uuid4()),
+                name=name,
+                description=desc,
+                sample=sample,
+                builtin=False,
+            )
         )
-        if dialog.exec() == QDialog.Accepted:
-            name, description, sample = dialog.values()
-            self._create_from(name, description, sample)
+        storage.save_custom_templates(custom)
+        self._reload_list()
 
     def _on_edit(self):
-        tpl = self._current_template()
-        if not tpl or tpl.builtin:
+        tpl = self._current()
+        if tpl is None or tpl.builtin:
             return
         dialog = TemplateEditDialog(self, template=tpl, title="Edit Template")
-        if dialog.exec() == QDialog.Accepted:
-            tpl.name, tpl.description, tpl.sample = dialog.values()
-            self._persist_custom()
-            self._reload(select_id=tpl.id)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name, desc, sample = dialog.values()
+        custom = storage.load_custom_templates()
+        for i, t in enumerate(custom):
+            if t.id == tpl.id:
+                custom[i] = Template(
+                    id=t.id, name=name, description=desc, sample=sample, builtin=False
+                )
+                break
+        storage.save_custom_templates(custom)
+        self._reload_list()
 
     def _on_delete(self):
-        tpl = self._current_template()
-        if not tpl or tpl.builtin:
+        tpl = self._current()
+        if tpl is None or tpl.builtin:
             return
         reply = QMessageBox.question(
             self,
             "Delete template",
-            f"Delete the custom template \u201c{tpl.name}\u201d?",
+            f"Delete the template \"{tpl.name}\"?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        self._templates = [t for t in self._templates if t.id != tpl.id]
-        self._persist_custom()
-        self._reload(select_id=None)
+        custom = [t for t in storage.load_custom_templates() if t.id != tpl.id]
+        storage.save_custom_templates(custom)
+        self._reload_list()

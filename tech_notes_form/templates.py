@@ -64,3 +64,24 @@ def get_template(template_id: str) -> Template | None:
         if tpl.id == template_id:
             return tpl
     return None
+
+
+def all_templates() -> List[Template]:
+    """Built-in plus user-saved custom templates."""
+    from . import storage
+
+    return list(TEMPLATES) + storage.load_custom_templates()
+
+
+def resolve_template(template_id: str) -> Template | None:
+    if not template_id:
+        return None
+    for tpl in all_templates():
+        if tpl.id == template_id:
+            return tpl
+    return None
+
+
+def template_choices() -> List[tuple[str, str]]:
+    """``(id, label)`` pairs for preference / picker combos. ``""`` = none."""
+    return [("", "None")] + [(t.id, t.name) for t in all_templates()]

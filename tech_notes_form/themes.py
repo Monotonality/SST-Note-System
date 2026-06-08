@@ -1,30 +1,39 @@
 """Theme palettes and Qt stylesheet generation.
 
-Themes: Dark, Light, System (follows the OS), Ocean, Warm, Super Dark, and
-Forest. "System" resolves to either the Dark or Light palette based on the
-current Windows app theme (falls back to Light elsewhere).
+Themes include System (follows the OS), built-in light/dark palettes, and
+several custom looks (Ocean, Warm, Matrix, Dallas, JoeGreen, RedEye, etc.).
+"System" resolves to either the Dark or Light palette based on the current
+Windows app theme (falls back to Light elsewhere).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+THEME_SYSTEM = "system"
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
-THEME_SYSTEM = "system"
 THEME_OCEAN = "ocean"
 THEME_WARM = "warm"
 THEME_SUPER_DARK = "super_dark"
 THEME_FOREST = "forest"
+THEME_MATRIX = "matrix"
+THEME_DALLAS = "dallas"
+THEME_JOEGREEN = "joegreen"
+THEME_REDEYE = "redeye"
 
 THEME_CHOICES = [
+    (THEME_SYSTEM, "System"),
     (THEME_DARK, "Dark"),
     (THEME_LIGHT, "Light"),
-    (THEME_SYSTEM, "System"),
     (THEME_OCEAN, "Ocean"),
     (THEME_WARM, "Warm"),
     (THEME_SUPER_DARK, "Super Dark"),
     (THEME_FOREST, "Forest"),
+    (THEME_MATRIX, "Matrix"),
+    (THEME_DALLAS, "Dallas"),
+    (THEME_JOEGREEN, "JoeGreen"),
+    (THEME_REDEYE, "RedEye"),
 ]
 
 
@@ -72,6 +81,31 @@ _PALETTES = {
         window="#0f1a14", panel="#142019", input_bg="#1a2820", text="#d4e8dc",
         muted="#7a9a88", border="#2a4034", accent="#3d9a6a", accent_text="#ffffff",
         accent_hover="#4db87d", danger="#d96a5c",
+    ),
+    # Matrix — vampire black + phosphor greens; text fields use pure black.
+    THEME_MATRIX: Palette(
+        window="#0D0208", panel="#001400", input_bg="#000000", text="#00FF41",
+        muted="#008F11", border="#005200", accent="#00FF41", accent_text="#0D0208",
+        accent_hover="#33FF66", danger="#FF3B3B",
+    ),
+    # Dallas — ultra-dark void with light-blue neon text and cyan highlights.
+    THEME_DALLAS: Palette(
+        window="#000000", panel="#06060A", input_bg="#000000", text="#6FFBFF",
+        muted="#3BA4C8", border="#0E5FA8", accent="#00E5FF", accent_text="#000006",
+        accent_hover="#66F0FF", danger="#FF4D8D",
+    ),
+    # JoeGreen — calm sage forest; soft contrast and easy-on-the-eyes clarity.
+    THEME_JOEGREEN: Palette(
+        window="#1E2C25", panel="#263530", input_bg="#1A2620", text="#E8F3EC",
+        muted="#8FAF9C", border="#405A4C", accent="#72A889", accent_text="#0E1812",
+        accent_hover="#88BE9C", danger="#C97A7A",
+    ),
+    # RedEye — ultra-dark with soft rose body text; vivid red reserved for accents.
+    # (Pure neon red on black is hard to read for long sessions — lighter rose helps.)
+    THEME_REDEYE: Palette(
+        window="#000000", panel="#0C0003", input_bg="#000000", text="#FFAAB8",
+        muted="#C4707C", border="#7A1828", accent="#FF4466", accent_text="#0A0002",
+        accent_hover="#FF6B85", danger="#FFAA77",
     ),
 }
 
@@ -186,7 +220,7 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
     }}
     QPushButton#Primary:hover {{ background-color: {p.accent_hover}; border-color: {p.accent_hover}; }}
 
-    QPushButton#Remove, QPushButton#IconButton {{
+    QPushButton#Remove, QPushButton#IconButton, QPushButton#FormatToggle {{
         background-color: transparent;
         color: {p.muted};
         border: 1px solid {p.border};
@@ -198,8 +232,14 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
         min-height: 28px;
         max-height: 28px;
     }}
+    QPushButton#FormatToggle:checked {{
+        color: {p.accent_text};
+        background-color: {p.accent};
+        border-color: {p.accent};
+    }}
     QPushButton#Remove:hover {{ color: {p.accent_text}; background-color: {p.danger}; border-color: {p.danger}; }}
     QPushButton#IconButton:hover {{ color: {p.accent_text}; background-color: {p.accent}; border-color: {p.accent}; }}
+    QPushButton#FormatToggle:hover {{ color: {p.accent_text}; background-color: {p.accent}; border-color: {p.accent}; }}
 
     QComboBox::drop-down {{ border: none; width: 22px; }}
     QComboBox QAbstractItemView {{
