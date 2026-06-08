@@ -176,6 +176,12 @@ class FieldRow(QWidget):
     def to_field(self) -> Field:
         return Field(label=self.label_edit.text(), value=self.value_edit.toPlainText())
 
+    def clear_value(self):
+        """Empty this field's value box; the label is left unchanged."""
+        self.value_edit.blockSignals(True)
+        self.value_edit.setPlainText("")
+        self.value_edit.blockSignals(False)
+
     def focus_label(self):
         self.label_edit.setFocus()
 

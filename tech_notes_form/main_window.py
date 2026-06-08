@@ -205,10 +205,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.empty_state)
         layout.addWidget(self.scroll, 1)
 
+        form_buttons = QHBoxLayout()
+        self.clear_form_btn = QPushButton("Clear values")
+        self.clear_form_btn.setToolTip(
+            "Empty every field's value while keeping all labels and rows"
+        )
+        self.clear_form_btn.clicked.connect(self.on_clear_form_values)
         self.add_field_btn = QPushButton("+ Add field")
         self.add_field_btn.setToolTip("Append a new empty field")
         self.add_field_btn.clicked.connect(self.on_add_field)
-        layout.addWidget(self.add_field_btn)
+        form_buttons.addWidget(self.clear_form_btn)
+        form_buttons.addStretch(1)
+        form_buttons.addWidget(self.add_field_btn)
+        layout.addLayout(form_buttons)
 
         return frame
 
@@ -413,6 +422,32 @@ class MainWindow(QMainWindow):
         self._update_preview()
         self.field_rows[-1].focus_label()
         self._schedule_save()
+
+    def on_clear_form_values(self):
+        if not self.field_rows:
+            self._set_status("No fields to clear.")
+            return
+        has_values = any(
+            row.to_field().value.strip() for row in self.field_rows
+        )
+        if has_values:
+            reply = QMessageBox.question(
+                self,
+                "Clear values",
+                "Clear every field's value?\n\nField labels and rows will be kept.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        for row in self.field_rows:
+            row.clear_value()
+        self._update_preview()
+        self._schedule_save()
+        n = len(self.field_rows)
+        self._set_status(
+            f"Cleared values in {n} field{'s' if n != 1 else ''}. Labels kept."
+        )
 
     def on_templates(self):
         note_text = self.preview.toPlainText()

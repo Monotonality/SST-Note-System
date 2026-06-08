@@ -1,8 +1,8 @@
 """Theme palettes and Qt stylesheet generation.
 
-Five themes are offered: Dark, Light, System (follows the OS), Ocean and Warm.
-"System" resolves to either the Dark or Light palette based on the current
-Windows app theme (falls back to Light elsewhere).
+Themes: Dark, Light, System (follows the OS), Ocean, Warm, Super Dark, and
+Forest. "System" resolves to either the Dark or Light palette based on the
+current Windows app theme (falls back to Light elsewhere).
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ THEME_LIGHT = "light"
 THEME_SYSTEM = "system"
 THEME_OCEAN = "ocean"
 THEME_WARM = "warm"
+THEME_SUPER_DARK = "super_dark"
+THEME_FOREST = "forest"
 
 THEME_CHOICES = [
     (THEME_DARK, "Dark"),
@@ -21,6 +23,8 @@ THEME_CHOICES = [
     (THEME_SYSTEM, "System"),
     (THEME_OCEAN, "Ocean"),
     (THEME_WARM, "Warm"),
+    (THEME_SUPER_DARK, "Super Dark"),
+    (THEME_FOREST, "Forest"),
 ]
 
 
@@ -58,6 +62,16 @@ _PALETTES = {
         window="#f6ece0", panel="#fff8ef", input_bg="#fffaf3", text="#3b2f25",
         muted="#8a7866", border="#e3d4c0", accent="#c2722e", accent_text="#ffffff",
         accent_hover="#d6822f", danger="#b23a2e",
+    ),
+    THEME_SUPER_DARK: Palette(
+        window="#060608", panel="#0c0c10", input_bg="#121218", text="#a8d8ff",
+        muted="#6a9ec4", border="#1e2a38", accent="#3d9ee5", accent_text="#060608",
+        accent_hover="#5cb0f0", danger="#ff7070",
+    ),
+    THEME_FOREST: Palette(
+        window="#0f1a14", panel="#142019", input_bg="#1a2820", text="#d4e8dc",
+        muted="#7a9a88", border="#2a4034", accent="#3d9a6a", accent_text="#ffffff",
+        accent_hover="#4db87d", danger="#d96a5c",
     ),
 }
 

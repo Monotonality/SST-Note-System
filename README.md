@@ -75,8 +75,9 @@ persist across launches.
   mirrored back into the form (and vice-versa).
 
 ### Themes
-Dark, Light, System (follows Windows), Ocean, and Warm. Choose from
-**View ▸ Theme**; the preference is remembered.
+Dark, Light, System (follows Windows), Ocean, Warm, Super Dark (near-black with
+light-blue text), and Forest. Choose from **View ▸ Theme**; the preference is
+remembered.
 
 ---
 
@@ -155,13 +156,13 @@ Open **Preferences** from the menu-bar row or `Ctrl+,`:
 - **Compact mode** — tighter spacing and fonts so the app stays usable in small
   / narrow windows. The minimum window size is also small for tight areas.
 
-The **theme** (Dark / Light / System / Ocean / Warm) is chosen from
-**View ▸ Theme**. Preferences and theme are saved to `settings.json` and
-restored on the next launch.
+The **theme** (Dark / Light / System / Ocean / Warm / Super Dark / Forest) is
+chosen from **View ▸ Theme**. Preferences and theme are saved to `settings.json`
+and restored on the next launch.
 
 ## Versioning
 The app follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`,
-currently `v1.1.0`), shown on the far right of the menu-bar row.
+currently `v1.2.0`), shown on the far right of the menu-bar row.
 
 ## Keyboard shortcuts
 - `Ctrl+N` — New note
