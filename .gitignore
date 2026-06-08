@@ -8,7 +8,8 @@ env/
 
 # PyInstaller
 build/
-dist/
+dist/*
+!dist/AdamNote.exe
 *.spec
 
 # OS / editor

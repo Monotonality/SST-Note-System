@@ -82,6 +82,14 @@ class MainWindow(QMainWindow):
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._persist_draft)
 
+        # Guards/timer for the editable live preview <-> form mirroring.
+        self._updating_preview = False      # True while the form writes into the preview
+        self._syncing_from_preview = False  # True while the preview rebuilds the form
+        self._preview_sync_timer = QTimer(self)
+        self._preview_sync_timer.setInterval(450)
+        self._preview_sync_timer.setSingleShot(True)
+        self._preview_sync_timer.timeout.connect(self._sync_form_from_preview)
+
         self._build_ui()
         self._build_menu()
         self._load_state()
@@ -219,9 +227,11 @@ class MainWindow(QMainWindow):
         self.blank_check = QCheckBox("Blank line between fields")
         layout.addWidget(self.blank_check)
 
-        layout.addWidget(QLabel("Live preview:"))
+        layout.addWidget(QLabel("Live preview (editable):"))
         self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
+        self.preview.setToolTip(
+            "Edit this text directly - your changes are mirrored back into the form."
+        )
         self.preview.setAccessibleName("Export preview")
         layout.addWidget(self.preview, 1)
 
@@ -238,6 +248,7 @@ class MainWindow(QMainWindow):
 
         self.format_combo.currentIndexChanged.connect(self._on_export_options_changed)
         self.blank_check.stateChanged.connect(self._on_export_options_changed)
+        self.preview.textChanged.connect(self._on_preview_edited)
         self.copy_btn.clicked.connect(self.on_copy)
         self.save_btn.clicked.connect(self.on_save)
 
@@ -303,6 +314,10 @@ class MainWindow(QMainWindow):
         prefs_menu.addAction(self.act_export)
 
         help_menu = menubar.addMenu("&Help")
+        contact_action = QAction("&Request a Change / Get Help\u2026", self)
+        contact_action.triggered.connect(self._show_contact)
+        help_menu.addAction(contact_action)
+        help_menu.addSeparator()
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -511,12 +526,42 @@ class MainWindow(QMainWindow):
         return self.format_combo.currentData() or MODE_SAME_LINE
 
     def _update_preview(self):
+        # While the user is editing the preview to drive the form, don't write the
+        # reformatted text back (it would fight the cursor and lose in-progress edits).
+        if self._syncing_from_preview:
+            return
         text = exporter.format_output(
             self.collect_fields(),
             mode=self._current_export_mode(),
             blank_between=self.blank_check.isChecked(),
         )
+        self._updating_preview = True
+        # Preserve the caret position across the programmatic refresh.
+        cursor = self.preview.textCursor()
+        pos = cursor.position()
         self.preview.setPlainText(text)
+        cursor = self.preview.textCursor()
+        cursor.setPosition(min(pos, len(text)))
+        self.preview.setTextCursor(cursor)
+        self._updating_preview = False
+
+    def _on_preview_edited(self):
+        # Ignore programmatic refreshes; only react to genuine user typing.
+        if self._updating_preview:
+            return
+        self._preview_sync_timer.start()
+
+    def _sync_form_from_preview(self):
+        self._syncing_from_preview = True
+        try:
+            fields = parse_notes(self.preview.toPlainText())
+            self._set_fields(fields)
+        finally:
+            self._syncing_from_preview = False
+        self._set_status(
+            f"Form updated from preview ({len(fields)} field{'s' if len(fields) != 1 else ''})."
+        )
+        self._schedule_save()
 
     def _set_status(self, message: str):
         self.status_label.setText(message)
@@ -570,8 +615,27 @@ class MainWindow(QMainWindow):
             f"<b>{APP_NAME}</b> v{__version__}<br><br>"
             "Parse messy plain-text ticket notes into an editable form, "
             "then export clean plain text.<br><br>"
+            "Created by <b>Adam Torres</b><br>"
+            "Software System Technologist Intern 2026<br>"
+            '<a href="https://www.linkedin.com/in/adam-venegas-torres/">'
+            "linkedin.com/in/adam-venegas-torres</a><br>"
+            '<a href="https://github.com/Monotonality/SST-Note-System">'
+            "github.com/Monotonality/SST-Note-System</a><br><br>"
             f"Drafts are saved to:<br><code>{storage.app_data_dir()}</code>",
         )
+
+    def _show_contact(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("Request a Change / Get Help")
+        box.setTextFormat(Qt.RichText)
+        box.setText(
+            f"<b>{APP_NAME}</b> support<br><br>"
+            "For change requests and assistance, contact:<br>"
+            '<a href="mailto:adam.torres@motorolasolutions.com">'
+            "adam.torres@motorolasolutions.com</a>"
+        )
+        box.setIcon(QMessageBox.Information)
+        box.exec()
 
     # --------------------------------------------------------------- events
 

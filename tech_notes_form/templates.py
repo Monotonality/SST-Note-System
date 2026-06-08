@@ -30,7 +30,7 @@ TEMPLATES: List[Template] = [
         description="Default SST case note layout: triage, investigation, and close-out.",
         sample=(
             "Priority: \n"
-            "INC0000:\n"
+            "Incident Number:\n"
             "Agency Name: \n"
             "Software Versions/Firmware Versions:\n"
             "\n"

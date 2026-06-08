@@ -207,8 +207,10 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
 
     QMenuBar {{ background-color: {p.panel}; color: {p.text}; }}
     QMenuBar::item:selected {{ background-color: {p.accent}; color: {p.accent_text}; }}
-    QMenu {{ background-color: {p.panel}; color: {p.text}; border: 1px solid {p.border}; }}
+    QMenu {{ background-color: {p.panel}; color: {p.text}; border: 1px solid {p.border}; padding: 4px; }}
+    QMenu::item {{ padding: 5px 36px 5px 16px; }}
     QMenu::item:selected {{ background-color: {p.accent}; color: {p.accent_text}; }}
+    QMenu::separator {{ height: 1px; background: {p.border}; margin: 4px 8px; }}
 
     QScrollArea {{ border: none; background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 12px; margin: 0; }}

@@ -54,7 +54,8 @@ persist across launches.
 - `Label: value` (same line)
 - Label on one line, value on the next line
 - Optional blank line between fields (toggle)
-- Live preview of the output
+- **Editable live preview** — type directly in the preview and your edits are
+  mirrored back into the form (and vice-versa).
 
 ### Themes
 Dark, Light, System (follows Windows), Ocean, and Warm. Choose from
@@ -76,16 +77,22 @@ python run.py
 
 You can also run it as a module: `python -m tech_notes_form`.
 
-## Build a double-clickable .exe
+## Build a single-file .exe
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-pip install pyinstaller
+pip install pyinstaller pillow
 python build_exe.py
 ```
 
-The packaged app appears in `dist\AdamNote\` (run `AdamNote.exe`).
-Edit `build_exe.py` and enable `--onefile` for a single-file build.
+This produces a single self-contained file: **`dist\AdamNote.exe`** — you can
+distribute just that one file (no Python or other files required on the target
+machine).
+
+The build automatically regenerates a crisp, tightly-cropped multi-size icon
+(`AdamNote Logo.ico`) from `AdamNote Logo.svg` via `make_icon.py` (needs
+`pillow`), so the taskbar/Explorer icon looks large and sharp. You can also run
+`python make_icon.py` on its own to (re)create the `.ico`.
 
 ---
 
@@ -126,7 +133,7 @@ restored on the next launch.
 
 ## Versioning
 The app follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`,
-currently `v1.0.0`), shown on the far right of the menu-bar row.
+currently `v1.1.0`), shown on the far right of the menu-bar row.
 
 ## Keyboard shortcuts
 - `Ctrl+N` — New note
@@ -140,3 +147,11 @@ currently `v1.0.0`), shown on the far right of the menu-bar row.
 - Offline-first; no cloud login, database server, or external integrations.
 - Single-instance: launching again focuses the existing app.
 - Optional system tray icon (click to show/hide; right-click to quit).
+
+## Author & support
+Created by **Adam Torres**, Software System Technologist Intern 2026
+([LinkedIn](https://www.linkedin.com/in/adam-venegas-torres/)).
+
+For change requests and assistance, contact
+[adam.torres@motorolasolutions.com](mailto:adam.torres@motorolasolutions.com)
+(also available in-app under **Help ▸ Request a Change / Get Help**).

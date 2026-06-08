@@ -18,6 +18,7 @@ from . import APP_NAME, ORG_NAME
 from .main_window import MainWindow
 
 LOGO_FILENAME = "AdamNote Logo.svg"
+ICO_FILENAME = "AdamNote Logo.ico"
 
 
 def _resource_path(name: str) -> Path:
@@ -32,12 +33,18 @@ def _resource_path(name: str) -> Path:
 
 
 def app_icon() -> QIcon:
-    """Return the AdamNote logo icon, falling back to a drawn icon if missing."""
-    logo = _resource_path(LOGO_FILENAME)
-    if logo.exists():
-        icon = QIcon(str(logo))
-        if not icon.isNull():
-            return icon
+    """Return the AdamNote logo icon, falling back to a drawn icon if missing.
+
+    Prefer the multi-size ``.ico`` (its artwork is tightly cropped, so the
+    taskbar icon looks large and sharp); fall back to the SVG, then to a
+    programmatically drawn icon.
+    """
+    for name in (ICO_FILENAME, LOGO_FILENAME):
+        path = _resource_path(name)
+        if path.exists():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
     return _make_icon()
 
 
