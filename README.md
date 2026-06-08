@@ -77,17 +77,24 @@ python run.py
 
 You can also run it as a module: `python -m tech_notes_form`.
 
-## Build a single-file .exe
+## Build a double-clickable .exe
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 pip install pyinstaller pillow
-python build_exe.py
+python build_exe.py              # single-file (default)
+python build_exe.py --onedir     # folder build (faster startup)
 ```
 
-This produces a single self-contained file: **`dist\AdamNote.exe`** — you can
-distribute just that one file (no Python or other files required on the target
-machine).
+| Mode | Command | Output | Best for |
+|------|---------|--------|----------|
+| **Single-file** (default) | `python build_exe.py` | `dist\AdamNote.exe` | Sharing one portable file |
+| **Folder** | `python build_exe.py --onedir` | `dist\AdamNote\AdamNote.exe` | Daily use — opens much faster |
+
+The single-file build unpacks itself to a temp folder on every launch, so
+startup is slower. The folder build skips that step and is the better choice
+when you use the app often on your own machine. Distribute the **entire**
+`dist\AdamNote\` folder (not just the `.exe` inside it).
 
 The build automatically regenerates a crisp, tightly-cropped multi-size icon
 (`AdamNote Logo.ico`) from `AdamNote Logo.svg` via `make_icon.py` (needs
