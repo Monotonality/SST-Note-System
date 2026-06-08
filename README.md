@@ -10,6 +10,23 @@ a browser or a local web server.
 
 ---
 
+## Download & run
+
+The application is **`dist/AdamNote.exe`**. That single file *is* AdamNote — no
+Python install, no extra DLLs, and no setup wizard. Double-click it to launch.
+
+You can **copy or move `AdamNote.exe` anywhere you want**: your Desktop, a
+pinned folder, a network share, or a USB drive. It is fully portable. Your notes,
+theme, and custom templates are saved separately in `%AppData%\AdamNote\`, so
+they follow your Windows profile no matter where you keep the exe.
+
+**First launch** may take a few seconds while the app unpacks itself; after
+that you can leave it running in the system tray for quicker access. If startup
+feels too slow, see [Build a double-clickable .exe](#build-a-double-clickable-exe)
+for a faster folder-based build (`--onedir`).
+
+---
+
 ## What it does
 
 Technologists paste messy notes from Notepad, Teams, or tickets. The app parses
@@ -88,13 +105,17 @@ python build_exe.py --onedir     # folder build (faster startup)
 
 | Mode | Command | Output | Best for |
 |------|---------|--------|----------|
-| **Single-file** (default) | `python build_exe.py` | `dist\AdamNote.exe` | Sharing one portable file |
+| **Single-file** (default) | `python build_exe.py` | `dist\AdamNote.exe` | Sharing — one file users can move anywhere |
 | **Folder** | `python build_exe.py --onedir` | `dist\AdamNote\AdamNote.exe` | Daily use — opens much faster |
+
+The single-file `AdamNote.exe` is the application. Recipients can move it to
+their Desktop (or anywhere else) and run it directly — nothing else from the
+repo is required.
 
 The single-file build unpacks itself to a temp folder on every launch, so
 startup is slower. The folder build skips that step and is the better choice
-when you use the app often on your own machine. Distribute the **entire**
-`dist\AdamNote\` folder (not just the `.exe` inside it).
+when you use the app often on your own machine. For folder builds, distribute
+the **entire** `dist\AdamNote\` folder (not just the `.exe` inside it).
 
 The build automatically regenerates a crisp, tightly-cropped multi-size icon
 (`AdamNote Logo.ico`) from `AdamNote Logo.svg` via `make_icon.py` (needs
