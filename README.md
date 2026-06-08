@@ -54,8 +54,7 @@ plain text. Field names vary by team, so parsing is intentionally forgiving.
 - Orphan lines (no colon) are folded into the previous value.
 
 ### Templates
-Built-in templates (Client / Agency, Customer / Precinct, Ticket / Reason,
-On-site Visit, Escalation Handoff) plus your own **custom templates**. Each
+Built-in template plus your own **custom templates**. Each
 offers a description, a preview snippet, and **Copy**, **Load**, and
 **Load & parse** actions.
 
