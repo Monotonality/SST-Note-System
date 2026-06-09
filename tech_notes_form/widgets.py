@@ -99,10 +99,10 @@ class PreferencesDialog(QDialog):
         form.addRow("Sidebars", self.persistent_check)
 
         self.compact_check = QCheckBox(
-            "Compact mode (tighter spacing and fonts for small windows)"
+            "Hide the form and edit in the live preview only (Import + Export)"
         )
         self.compact_check.setChecked(compact)
-        form.addRow("Density", self.compact_check)
+        form.addRow("Compact mode", self.compact_check)
 
         section("Form")
         self.confirm_clear_check = QCheckBox(

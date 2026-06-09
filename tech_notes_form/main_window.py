@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
+from datetime import datetime
+from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
@@ -14,10 +15,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QTextEdit,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -113,8 +116,13 @@ class MainWindow(QMainWindow):
         self._splitter_save_timer.setSingleShot(True)
         self._splitter_save_timer.timeout.connect(self._persist_splitter_sizes)
 
+        self._last_text_focus: Optional[QWidget] = None
+
         self._build_ui()
         self._build_menu()
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._on_focus_changed)
         self._load_state()
         self._update_preview()
         self._update_empty_state()
@@ -245,10 +253,17 @@ class MainWindow(QMainWindow):
             "Empty every field's value while keeping all labels and rows"
         )
         self.clear_form_btn.clicked.connect(self.on_clear_form_values)
+        self.datetime_btn = QPushButton("Date/time")
+        self.datetime_btn.setToolTip(
+            "Insert the current date, time, and timezone at the cursor (Ctrl+Shift+T)"
+        )
+        self.datetime_btn.setAccessibleName("Insert date and time")
+        self.datetime_btn.clicked.connect(self.insert_datetime)
         self.add_field_btn = QPushButton("+ Add field")
         self.add_field_btn.setToolTip("Append a new empty field")
         self.add_field_btn.clicked.connect(self.on_add_field)
         form_buttons.addWidget(self.clear_form_btn)
+        form_buttons.addWidget(self.datetime_btn)
         form_buttons.addStretch(1)
         form_buttons.addWidget(self.add_field_btn)
         layout.addLayout(form_buttons)
@@ -316,6 +331,12 @@ class MainWindow(QMainWindow):
         copy_action.triggered.connect(self.on_copy)
         file_menu.addAction(copy_action)
 
+        self.act_insert_datetime = QAction("Insert &date/time", self)
+        self.act_insert_datetime.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        self.act_insert_datetime.triggered.connect(self.insert_datetime)
+        file_menu.addAction(self.act_insert_datetime)
+        self.addAction(self.act_insert_datetime)
+
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence("Ctrl+Q"))
@@ -346,6 +367,13 @@ class MainWindow(QMainWindow):
         self.act_export.setShortcut(QKeySequence("Ctrl+3"))
         self.act_export.toggled.connect(self._on_export_toggled)
 
+        self.act_compact = QAction("&Compact mode (live preview only)", self, checkable=True)
+        self.act_compact.setShortcut(QKeySequence("Ctrl+2"))
+        self.act_compact.setToolTip(
+            "Hide the form and edit in the live preview (Ctrl+2)"
+        )
+        self.act_compact.toggled.connect(self._on_compact_toggled)
+
         self.act_prefs = QAction("&Preferences\u2026", self)
         self.act_prefs.setShortcut(QKeySequence("Ctrl+,"))
         self.act_prefs.triggered.connect(self.open_preferences)
@@ -354,6 +382,7 @@ class MainWindow(QMainWindow):
         prefs_menu.addAction(self.act_prefs)
         prefs_menu.addSeparator()
         prefs_menu.addAction(self.act_import)
+        prefs_menu.addAction(self.act_compact)
         prefs_menu.addAction(self.act_export)
 
         help_menu = menubar.addMenu("&Help")
@@ -425,17 +454,55 @@ class MainWindow(QMainWindow):
         self.default_export_mode = values["default_export_mode"]
         self.act_import.setChecked(self.import_panel_visible)
         self.act_export.setChecked(self.export_panel_visible)
+        self.act_compact.blockSignals(True)
+        self.act_compact.setChecked(self.compact)
+        self.act_compact.blockSignals(False)
         self._apply_default_export_mode_from_settings()
         if not self.remember_splitter_sizes:
             self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
         self._apply_density()
-        self.set_theme(self.current_theme)  # re-apply stylesheet (compact-aware) + save
+        self._apply_compact_layout()
+        self.set_theme(self.current_theme)  # re-apply stylesheet + save
         self._update_rails()
         self._save_settings()
 
     def _apply_density(self):
         margin = 4 if self.compact else 12
         self._central_layout.setContentsMargins(margin, margin, margin, margin)
+
+    def _apply_compact_layout(self):
+        """Compact mode hides the form and uses the export live preview as the editor."""
+        if self.compact:
+            self.form_panel.hide()
+            if not self.export_panel.isVisible():
+                self.act_export.blockSignals(True)
+                self.act_export.setChecked(True)
+                self.act_export.blockSignals(False)
+                self.export_panel.setVisible(True)
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 0)
+            self.splitter.setStretchFactor(2, 1)
+            sizes = self.splitter.sizes()
+            total = max(sum(sizes), 600)
+            import_w = min(max(sizes[0], 180), 280) if sizes[0] > 0 else 220
+            self.splitter.setSizes([import_w, 0, total - import_w])
+            self._update_preview()
+        else:
+            self.form_panel.show()
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+            self.splitter.setStretchFactor(2, 0)
+            self._apply_splitter_sizes()
+
+    def _on_compact_toggled(self, checked: bool):
+        self.compact = checked
+        self._apply_density()
+        self._apply_compact_layout()
+        self._save_settings()
+        if checked:
+            self._set_status("Compact mode on — edit in the live preview.")
+        else:
+            self._set_status("Compact mode off — form visible.")
 
     def _load_preferences_from_settings(self):
         s = self.settings
@@ -493,7 +560,7 @@ class MainWindow(QMainWindow):
             self._splitter_save_timer.start()
 
     def _persist_splitter_sizes(self):
-        if not self.remember_splitter_sizes:
+        if not self.remember_splitter_sizes or self.compact:
             return
         self.settings["splitter_sizes"] = self.splitter.sizes()
         storage.save_settings(self.settings)
@@ -520,6 +587,42 @@ class MainWindow(QMainWindow):
     def _on_import_pasted(self):
         if self.auto_parse_on_paste:
             self._run_default_parse()
+
+    def _on_focus_changed(self, _old: QWidget, new: QWidget):
+        if isinstance(new, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            self._last_text_focus = new
+
+    def _datetime_stamp(self) -> str:
+        now = datetime.now().astimezone()
+        tz_label = now.strftime("%Z").strip()
+        if not tz_label:
+            tz_label = now.strftime("%z")
+        return f"{now.strftime('%Y-%m-%d %H:%M')} {tz_label}"
+
+    def _text_target_for_datetime(self) -> Optional[QWidget]:
+        focused = self.focusWidget()
+        if isinstance(focused, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            return focused
+        if self._last_text_focus is not None:
+            return self._last_text_focus
+        return self.paste_box
+
+    def _insert_text_at_cursor(self, widget: QWidget, text: str):
+        if isinstance(widget, QLineEdit):
+            widget.insert(text)
+        elif isinstance(widget, QPlainTextEdit):
+            widget.insertPlainText(text)
+        elif isinstance(widget, QTextEdit):
+            widget.textCursor().insertText(text)
+
+    def insert_datetime(self):
+        target = self._text_target_for_datetime()
+        if target is None:
+            return
+        stamp = self._datetime_stamp()
+        self._insert_text_at_cursor(target, stamp)
+        self._schedule_save()
+        self._set_status(f"Inserted {stamp}.")
 
     # -------------------------------------------------------------- actions
 
@@ -665,7 +768,7 @@ class MainWindow(QMainWindow):
         self.current_theme = theme_id
         app = QApplication.instance()
         if app is not None:
-            app.setStyleSheet(themes.build_stylesheet(theme_id, self.compact))
+            app.setStyleSheet(themes.build_stylesheet(theme_id, compact=False))
         action = self._theme_actions.get(theme_id)
         if action and not action.isChecked():
             action.setChecked(True)
@@ -763,9 +866,15 @@ class MainWindow(QMainWindow):
             self._set_fields(fields)
         finally:
             self._syncing_from_preview = False
-        self._set_status(
-            f"Form updated from preview ({len(fields)} field{'s' if len(fields) != 1 else ''})."
-        )
+        n = len(fields)
+        if self.compact:
+            self._set_status(
+                f"Note updated ({n} field{'s' if n != 1 else ''})."
+            )
+        else:
+            self._set_status(
+                f"Form updated from preview ({n} field{'s' if n != 1 else ''})."
+            )
         self._schedule_save()
 
     def _set_status(self, message: str):
@@ -787,10 +896,14 @@ class MainWindow(QMainWindow):
     def _load_state(self):
         self.settings = storage.load_settings()
         self._load_preferences_from_settings()
+        self.act_compact.blockSignals(True)
+        self.act_compact.setChecked(self.compact)
+        self.act_compact.blockSignals(False)
         theme = self.settings.get("theme", themes.THEME_SYSTEM)
         self._apply_density()
         self._apply_panel_visibility()
         self._apply_splitter_sizes()
+        self._apply_compact_layout()
         self.set_theme(theme)
         self._update_rails()
 

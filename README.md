@@ -153,7 +153,7 @@ Open **Preferences** from the **Preferences** menu or `Ctrl+,`:
 
 **Appearance**
 - **Persistent sidebars** — reopen buttons when a side panel is collapsed
-- **Compact mode** — tighter spacing and fonts
+- **Compact mode** — hides the form; edit in the live preview (Import + Export only)
 
 **Form**
 - **Confirm before Clear values** — ask before emptying all field values
@@ -175,13 +175,15 @@ and theme are saved to `settings.json` and restored on the next launch.
 
 ## Versioning
 The app follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`,
-currently `v1.3.0`), shown on the far right of the menu-bar row.
+currently `v1.4.0`), shown on the far right of the menu-bar row.
 
 ## Keyboard shortcuts
 - `Ctrl+N` — New note
 - `Ctrl+S` — Save export to `.txt`
 - `Ctrl+Shift+C` — Copy export to clipboard
+- `Ctrl+Shift+T` — Insert date/time at the cursor (Import, form fields, or preview)
 - `Ctrl+1` — Show/hide the Import panel
+- `Ctrl+2` — Toggle compact mode (hide form, edit in live preview)
 - `Ctrl+3` — Show/hide the Export panel
 - `Ctrl+Q` — Quit
 
