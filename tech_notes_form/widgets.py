@@ -156,7 +156,7 @@ class PreferencesDialog(QDialog):
         eidx = self.export_mode_combo.findData(default_export_mode)
         if eidx >= 0:
             self.export_mode_combo.setCurrentIndex(eidx)
-        form.addRow("Default export format", self.export_mode_combo)
+        form.addRow("Export format", self.export_mode_combo)
 
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)

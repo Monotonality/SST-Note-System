@@ -11,7 +11,6 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -307,18 +306,6 @@ class MainWindow(QMainWindow):
     def _build_export_panel(self) -> QWidget:
         frame, layout, self._export_collapse_btn = _panel("Export", "\u00bb")
 
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("Format:"))
-        self.format_combo = QComboBox()
-        for mode_id, label in EXPORT_MODES:
-            self.format_combo.addItem(label, mode_id)
-        self.format_combo.setAccessibleName("Export format")
-        controls.addWidget(self.format_combo, 1)
-        layout.addLayout(controls)
-
-        self.blank_check = QCheckBox("Blank line between fields")
-        layout.addWidget(self.blank_check)
-
         layout.addWidget(QLabel("Live preview (editable):"))
         self.preview = QPlainTextEdit()
         self.preview.setToolTip(
@@ -330,15 +317,18 @@ class MainWindow(QMainWindow):
         out_buttons = QHBoxLayout()
         self.copy_btn = QPushButton("Copy text")
         self.copy_btn.setToolTip("Copy the preview to the clipboard")
+        self.blank_check = QCheckBox("Blank lines")
+        self.blank_check.setToolTip("Insert a blank line between fields in the export")
+        self.blank_check.setAccessibleName("Blank line between fields")
         self.save_btn = QPushButton("Save .txt")
         self.save_btn.setObjectName("Primary")
         self.save_btn.setToolTip("Save the preview to a text file (Ctrl+S)")
         out_buttons.addWidget(self.copy_btn)
+        out_buttons.addWidget(self.blank_check)
         out_buttons.addStretch(1)
         out_buttons.addWidget(self.save_btn)
         layout.addLayout(out_buttons)
 
-        self.format_combo.currentIndexChanged.connect(self._on_export_options_changed)
         self.blank_check.stateChanged.connect(self._on_export_options_changed)
         self.preview.textChanged.connect(self._on_preview_edited)
         self.copy_btn.clicked.connect(self.on_copy)
@@ -518,13 +508,13 @@ class MainWindow(QMainWindow):
         self.act_compact.blockSignals(True)
         self.act_compact.setChecked(self.compact)
         self.act_compact.blockSignals(False)
-        self._apply_default_export_mode_from_settings()
         if not self.remember_splitter_sizes:
             self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
         self._apply_density()
         self._apply_compact_layout()
         self.set_theme(self.current_theme)  # re-apply stylesheet + save
         self._update_rails()
+        self._update_preview()
         self._save_settings()
 
     def _apply_density(self):
@@ -588,10 +578,6 @@ class MainWindow(QMainWindow):
     def _apply_note_to_ui(self, note: storage.NoteState) -> None:
         self._switching_tabs = True
         self.paste_box.setPlainText(note.raw_import)
-        mode = note.export_mode or self.default_export_mode
-        idx = self.format_combo.findData(mode)
-        if idx >= 0:
-            self.format_combo.setCurrentIndex(idx)
         self.blank_check.setChecked(note.blank_between)
         self._set_fields(note.fields)
         self._switching_tabs = False
@@ -706,7 +692,6 @@ class MainWindow(QMainWindow):
         self._active_note_index = index
         self.paste_box.clear()
         self._set_fields([])
-        self._apply_default_export_mode_from_settings()
         if apply_template:
             self._apply_template(DEFAULT_TEMPLATE_ID)
         self._capture_current_note()
@@ -851,11 +836,6 @@ class MainWindow(QMainWindow):
             return
         self.settings["splitter_sizes"] = self.splitter.sizes()
         storage.save_settings(self.settings)
-
-    def _apply_default_export_mode_from_settings(self):
-        idx = self.format_combo.findData(self.default_export_mode)
-        if idx >= 0:
-            self.format_combo.setCurrentIndex(idx)
 
     def _run_default_parse(self):
         if self.default_parse_mode == PARSE_MODE_MERGE:
@@ -1159,7 +1139,7 @@ class MainWindow(QMainWindow):
         self._schedule_save()
 
     def _current_export_mode(self) -> str:
-        return self.format_combo.currentData() or MODE_SAME_LINE
+        return self.default_export_mode or MODE_SAME_LINE
 
     def _update_preview(self):
         # While the user is editing the preview to drive the form, don't write the
