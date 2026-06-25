@@ -10,6 +10,8 @@ env/
 build/
 dist/*
 !dist/AdamNote.exe
+!dist/AdamNote/
+!dist/AdamNote/**
 *.spec
 
 # OS / editor
