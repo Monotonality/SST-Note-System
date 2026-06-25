@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import List
 
 
+DEFAULT_TEMPLATE_ID = "default_case"
+
+
 @dataclass
 class Template:
     id: str
@@ -25,9 +28,39 @@ class Template:
 
 TEMPLATES: List[Template] = [
     Template(
-        id="default_case",
+        id=DEFAULT_TEMPLATE_ID,
         name="Standard Case (Default)",
         description="Default SST case note layout: triage, investigation, and close-out.",
+        sample=(
+            "Priority: \n"
+            "INC Number:\n"
+            "Agency:\n"
+            "Name:\n"
+            "State:\n"
+            "Software/Firmware Version:\n"
+            "Deployment Date:\n"
+            "\n"
+            "Initial Issue Description:\n"
+            "\n"
+            "Customer Ticket History:\n"
+            "\n"
+            "Incident Context & Background:\n"
+            "\n"
+            "Diagnostic Findings:\n"
+            "\n"
+            "KB Utilization:\n"
+            "\n"
+            "Actions Taken:\n"
+            "\n"
+            "Next Steps:\n"
+            "\n"
+            "Closure Details:\n"
+        ),
+    ),
+    Template(
+        id="joseph_template",
+        name="Joseph Template",
+        description="Legacy SST case note layout with confirm-status close-out.",
         sample=(
             "Priority: \n"
             "Incident Number:\n"

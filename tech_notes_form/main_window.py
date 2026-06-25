@@ -32,7 +32,7 @@ from . import APP_NAME, __version__
 from . import exporter, storage, themes
 from .exporter import EXPORT_MODES, MODE_SAME_LINE
 from .parser import Field, merge_fields, parse_notes
-from .templates import resolve_template, template_choices
+from .templates import DEFAULT_TEMPLATE_ID, resolve_template, template_choices
 from .widgets import (
     FieldRow,
     ImportPasteEdit,
@@ -512,7 +512,7 @@ class MainWindow(QMainWindow):
         self.import_panel_visible = bool(s.get("import_panel_visible", True))
         self.export_panel_visible = bool(s.get("export_panel_visible", True))
         self.remember_splitter_sizes = bool(s.get("remember_splitter_sizes", True))
-        self.default_template_id = s.get("default_template_id", "") or ""
+        self.default_template_id = s.get("default_template_id", DEFAULT_TEMPLATE_ID)
         self.auto_parse_on_paste = bool(s.get("auto_parse_on_paste", False))
         self.default_parse_mode = s.get("default_parse_mode", PARSE_MODE_PARSE)
         self.default_export_mode = s.get("default_export_mode", MODE_SAME_LINE)
@@ -576,13 +576,18 @@ class MainWindow(QMainWindow):
         else:
             self.on_parse()
 
-    def _apply_default_template(self) -> bool:
-        tpl = resolve_template(self.default_template_id)
+    def _apply_template(self, template_id: str) -> bool:
+        tpl = resolve_template(template_id)
         if tpl is None:
             return False
         self.paste_box.setPlainText(tpl.sample)
         self._run_default_parse()
         return True
+
+    def _apply_default_template(self) -> bool:
+        if not self.default_template_id:
+            return False
+        return self._apply_template(self.default_template_id)
 
     def _on_import_pasted(self):
         if self.auto_parse_on_paste:
@@ -685,7 +690,7 @@ class MainWindow(QMainWindow):
         self.paste_box.clear()
         self._set_fields([])
         self._apply_default_export_mode_from_settings()
-        if self._apply_default_template():
+        if self._apply_template(DEFAULT_TEMPLATE_ID):
             self._set_status("Started a new note from the default template.")
         else:
             self._set_status("Started a new note.")
