@@ -275,5 +275,38 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
     QSplitter::handle {{ background: {p.border}; }}
     QSplitter::handle:horizontal {{ width: 4px; }}
 
+    QTabBar#NoteTabBar::tab {{
+        background-color: {p.panel};
+        color: {p.muted};
+        border: 1px solid {p.border};
+        border-bottom: none;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        padding: 6px 20px 6px 14px;
+        margin-right: 4px;
+    }}
+    QTabBar#NoteTabBar::tab:selected {{
+        background-color: {p.input_bg};
+        color: {p.text};
+        border-color: {p.accent};
+    }}
+    QTabBar#NoteTabBar::tab:hover {{
+        color: {p.text};
+        border-color: {p.accent};
+    }}
+    QToolButton#TabCloseButton {{
+        background: transparent;
+        color: {p.text};
+        border: none;
+        font-size: 15px;
+        font-weight: 700;
+        padding: 0;
+        margin: 0;
+    }}
+    QToolButton#TabCloseButton:hover {{
+        color: {p.accent_text};
+        background-color: {p.danger};
+    }}
+
     QToolTip {{ background-color: {p.panel}; color: {p.text}; border: 1px solid {p.border}; }}
     """

@@ -175,7 +175,7 @@ and theme are saved to `settings.json` and restored on the next launch.
 
 ## Versioning
 The app follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`,
-currently `v1.4.5`), shown on the far right of the menu-bar row.
+currently `v1.5.0`), shown on the far right of the menu-bar row.
 
 ## Keyboard shortcuts
 - `Ctrl+N` — New note

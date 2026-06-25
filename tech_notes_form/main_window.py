@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QTabBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +46,7 @@ from .widgets import (
 )
 
 DEFAULT_SPLITTER_SIZES = [260, 760, 300]
+MIN_SIDE_PANEL_WIDTH = 40
 
 
 def _panel(title: str, collapse_glyph: str | None = None):
@@ -117,6 +121,9 @@ class MainWindow(QMainWindow):
         self._splitter_save_timer.timeout.connect(self._persist_splitter_sizes)
 
         self._last_text_focus: Optional[QWidget] = None
+        self._notes: List[storage.NoteState] = []
+        self._switching_tabs = False
+        self._reordering_tabs = False
 
         self._build_ui()
         self._build_menu()
@@ -156,12 +163,39 @@ class MainWindow(QMainWindow):
         self.right_rail.clicked.connect(lambda: self.act_export.setChecked(True))
 
         container = QWidget()
-        self._central_layout = QHBoxLayout(container)
+        self._central_layout = QVBoxLayout(container)
         self._central_layout.setContentsMargins(12, 12, 12, 12)
-        self._central_layout.setSpacing(6)
-        self._central_layout.addWidget(self.left_rail)
-        self._central_layout.addWidget(self.splitter, 1)
-        self._central_layout.addWidget(self.right_rail)
+        self._central_layout.setSpacing(8)
+
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(6)
+        self.note_tab_bar = QTabBar()
+        self.note_tab_bar.setObjectName("NoteTabBar")
+        self.note_tab_bar.setAccessibleName("Open notes")
+        self.note_tab_bar.setMovable(True)
+        self.note_tab_bar.setExpanding(False)
+        self.note_tab_bar.currentChanged.connect(self._on_note_tab_changed)
+        self.note_tab_bar.tabMoved.connect(self._on_note_tab_moved)
+        tab_row.addWidget(self.note_tab_bar)
+
+        self.add_note_tab_btn = QPushButton("+")
+        self.add_note_tab_btn.setObjectName("IconButton")
+        self.add_note_tab_btn.setToolTip("Open a new note tab")
+        self.add_note_tab_btn.setAccessibleName("New note tab")
+        self.add_note_tab_btn.setFixedWidth(28)
+        self.add_note_tab_btn.clicked.connect(self.on_new_note)
+        tab_row.addWidget(self.add_note_tab_btn)
+        tab_row.addStretch(1)
+        self._central_layout.addLayout(tab_row)
+
+        content_row = QWidget()
+        content_layout = QHBoxLayout(content_row)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+        content_layout.addWidget(self.left_rail)
+        content_layout.addWidget(self.splitter, 1)
+        content_layout.addWidget(self.right_rail)
+        self._central_layout.addWidget(content_row, 1)
         self.setCentralWidget(container)
 
     def _make_rail(self, glyph: str, tooltip: str) -> QPushButton:
@@ -202,7 +236,7 @@ class MainWindow(QMainWindow):
         self.prefix_dash_btn.setAccessibleName("Prefix dash on selected lines")
         self.prefix_dash_btn.setCursor(Qt.PointingHandCursor)
         self.new_btn = QPushButton("New note")
-        self.new_btn.setToolTip("Clear the paste area and the form (Ctrl+N)")
+        self.new_btn.setToolTip("Open a new note tab with the default template (Ctrl+N)")
         buttons.addWidget(self.parse_btn)
         buttons.addWidget(self.merge_btn)
         buttons.addWidget(self.prefix_dash_btn)
@@ -321,6 +355,11 @@ class MainWindow(QMainWindow):
         new_action.triggered.connect(self.on_new_note)
         file_menu.addAction(new_action)
 
+        open_action = QAction("&Open\u2026", self)
+        open_action.setShortcut(QKeySequence.Open)  # Ctrl+O
+        open_action.triggered.connect(self.on_open)
+        file_menu.addAction(open_action)
+
         save_action = QAction("&Save Export\u2026", self)
         save_action.setShortcut(QKeySequence.Save)  # Ctrl+S
         save_action.triggered.connect(self.on_save)
@@ -406,12 +445,34 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- panels
 
     def _on_import_toggled(self, visible: bool):
+        self.import_panel_visible = visible
         self.import_panel.setVisible(visible)
+        if visible and not self.compact:
+            self._ensure_side_panel_width(0, DEFAULT_SPLITTER_SIZES[0])
         self._update_rails()
 
     def _on_export_toggled(self, visible: bool):
+        self.export_panel_visible = visible
         self.export_panel.setVisible(visible)
+        if visible and not self.compact:
+            self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
         self._update_rails()
+
+    def _ensure_side_panel_width(self, panel_index: int, target_width: int) -> None:
+        """Restore a usable width when a side panel is reopened from zero width."""
+        if self.compact:
+            return
+        sizes = list(self.splitter.sizes())
+        if len(sizes) != 3 or sizes[panel_index] >= MIN_SIDE_PANEL_WIDTH:
+            return
+        deficit = target_width - sizes[panel_index]
+        form_index = 1
+        if sizes[form_index] - deficit < 120:
+            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+            return
+        sizes[panel_index] = target_width
+        sizes[form_index] -= deficit
+        self.splitter.setSizes(sizes)
 
     def _update_rails(self):
         # Use the toggle state (not isVisible(), which is False before the
@@ -470,6 +531,228 @@ class MainWindow(QMainWindow):
         margin = 4 if self.compact else 12
         self._central_layout.setContentsMargins(margin, margin, margin, margin)
 
+    # --------------------------------------------------------- note tabs
+
+    def _note_has_content(self, note: storage.NoteState) -> bool:
+        if note.raw_import.strip():
+            return True
+        return any(f.label.strip() or f.value.strip() for f in note.fields)
+
+    def _derive_tab_title(self, note: storage.NoteState, index: int) -> str:
+        for field in note.fields:
+            label = field.label.lower()
+            if "inc" in label and "number" in label:
+                value = field.value.strip()
+                if value:
+                    return value[:32]
+        for field in note.fields:
+            value = field.value.strip()
+            if value:
+                return value[:24]
+        if note.title.strip():
+            return note.title.strip()[:32]
+        return f"Note {index + 1}"
+
+    def _refresh_tab_labels(self) -> None:
+        self._switching_tabs = True
+        for index, note in enumerate(self._notes):
+            self.note_tab_bar.setTabText(index, self._derive_tab_title(note, index))
+        self._switching_tabs = False
+
+    def _save_ui_to_note(self, index: int) -> None:
+        if index < 0 or index >= len(self._notes):
+            return
+        fields = self.collect_fields()
+        title = self._derive_tab_title(
+            storage.NoteState(
+                id=self._notes[index].id,
+                fields=fields,
+                raw_import=self.paste_box.toPlainText(),
+            ),
+            index,
+        )
+        self._notes[index] = storage.NoteState(
+            id=self._notes[index].id,
+            title=title,
+            fields=fields,
+            raw_import=self.paste_box.toPlainText(),
+            export_mode=self._current_export_mode(),
+            blank_between=self.blank_check.isChecked(),
+        )
+        if self.note_tab_bar.currentIndex() == index:
+            self.note_tab_bar.setTabText(index, title)
+
+    def _capture_current_note(self) -> None:
+        self._save_ui_to_note(self.note_tab_bar.currentIndex())
+
+    def _apply_note_to_ui(self, note: storage.NoteState) -> None:
+        self._switching_tabs = True
+        self.paste_box.setPlainText(note.raw_import)
+        mode = note.export_mode or self.default_export_mode
+        idx = self.format_combo.findData(mode)
+        if idx >= 0:
+            self.format_combo.setCurrentIndex(idx)
+        self.blank_check.setChecked(note.blank_between)
+        self._set_fields(note.fields)
+        self._switching_tabs = False
+
+    def _on_note_tab_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        if self._reordering_tabs:
+            self._active_note_index = index
+            return
+        if self._switching_tabs:
+            return
+        previous = getattr(self, "_active_note_index", -1)
+        if previous >= 0 and previous != index:
+            self._save_ui_to_note(previous)
+        self._active_note_index = index
+        if index < len(self._notes):
+            self._apply_note_to_ui(self._notes[index])
+
+    def _on_note_tab_moved(self, from_index: int, to_index: int) -> None:
+        if self._switching_tabs or from_index == to_index:
+            return
+        self._reordering_tabs = True
+        try:
+            self._save_ui_to_note(self._active_note_index)
+            note = self._notes.pop(from_index)
+            self._notes.insert(to_index, note)
+            old_active = self._active_note_index
+            if old_active == from_index:
+                self._active_note_index = to_index
+            elif from_index < old_active <= to_index:
+                self._active_note_index = old_active - 1
+            elif to_index <= old_active < from_index:
+                self._active_note_index = old_active + 1
+        finally:
+            self._reordering_tabs = False
+        self._schedule_save()
+
+    def _attach_tab_close_button(self, index: int) -> None:
+        wrapper = QWidget(self.note_tab_bar)
+        wrapper.setObjectName("TabCloseWrapper")
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(0)
+        btn = QToolButton(wrapper)
+        btn.setObjectName("TabCloseButton")
+        btn.setText("\u00d7")
+        btn.setToolTip("Close note tab")
+        btn.setAccessibleName("Close note tab")
+        btn.setFixedSize(18, 18)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(self._on_tab_close_button_clicked)
+        layout.addWidget(btn)
+        self.note_tab_bar.setTabButton(index, QTabBar.RightSide, wrapper)
+
+    def _on_tab_close_button_clicked(self) -> None:
+        btn = self.sender()
+        if btn is None:
+            return
+        for index in range(self.note_tab_bar.count()):
+            wrapper = self.note_tab_bar.tabButton(index, QTabBar.RightSide)
+            if wrapper is None:
+                continue
+            tab_btn = wrapper.findChild(QToolButton, "TabCloseButton")
+            if tab_btn is btn:
+                self._on_note_tab_close(index)
+                return
+
+    def _on_note_tab_close(self, index: int) -> None:
+        if len(self._notes) <= 1:
+            QMessageBox.information(
+                self,
+                "Cannot close tab",
+                "At least one note tab must remain open.",
+            )
+            return
+        note = self._notes[index]
+        if self._note_has_content(note):
+            reply = QMessageBox.question(
+                self,
+                "Close note tab",
+                f"Close \"{self._derive_tab_title(note, index)}\"?\n\n"
+                "Unsaved work in this tab will be removed.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        was_active = index == self.note_tab_bar.currentIndex()
+        self._switching_tabs = True
+        self.note_tab_bar.removeTab(index)
+        self._notes.pop(index)
+        new_index = self.note_tab_bar.currentIndex()
+        self._active_note_index = new_index
+        self._refresh_tab_labels()
+        self._switching_tabs = False
+        if was_active and 0 <= new_index < len(self._notes):
+            self._apply_note_to_ui(self._notes[new_index])
+        self._schedule_save()
+        self._set_status("Closed a note tab.")
+
+    def _add_note_tab(self, *, apply_template: bool = False) -> None:
+        self._capture_current_note()
+        note = storage.NoteState(id=storage.new_note_id())
+        self._notes.append(note)
+        index = len(self._notes) - 1
+        self._switching_tabs = True
+        self.note_tab_bar.addTab(self._derive_tab_title(note, index))
+        self._attach_tab_close_button(index)
+        self.note_tab_bar.setCurrentIndex(index)
+        self._switching_tabs = False
+        self._active_note_index = index
+        self.paste_box.clear()
+        self._set_fields([])
+        self._apply_default_export_mode_from_settings()
+        if apply_template:
+            self._apply_template(DEFAULT_TEMPLATE_ID)
+        self._capture_current_note()
+        self._schedule_save()
+
+    def _clear_note_tabs(self) -> None:
+        while self.note_tab_bar.count() > 0:
+            self.note_tab_bar.removeTab(self.note_tab_bar.count() - 1)
+
+    def _load_workspace_tabs(self, workspace: storage.WorkspaceState) -> None:
+        self._notes = workspace.notes or [storage.NoteState(id=storage.new_note_id())]
+        self._switching_tabs = True
+        self._clear_note_tabs()
+        for index, note in enumerate(self._notes):
+            self.note_tab_bar.addTab(self._derive_tab_title(note, index))
+            self._attach_tab_close_button(index)
+        active = max(0, min(workspace.active_index, len(self._notes) - 1))
+        self.note_tab_bar.setCurrentIndex(active)
+        self._active_note_index = active
+        self._switching_tabs = False
+        self._apply_note_to_ui(self._notes[active])
+
+    def _update_active_tab_title(self) -> None:
+        if self._switching_tabs:
+            return
+        index = self.note_tab_bar.currentIndex()
+        if index < 0 or index >= len(self._notes):
+            return
+        note = self._notes[index]
+        title = self._derive_tab_title(
+            storage.NoteState(
+                id=note.id,
+                fields=self.collect_fields(),
+                raw_import=self.paste_box.toPlainText(),
+            ),
+            index,
+        )
+        self.note_tab_bar.setTabText(index, title)
+
+    def _notes_dialog_dir(self) -> str:
+        return str(storage.resolve_notes_dir(self.settings))
+
+    def _remember_notes_dir(self, file_path: str) -> None:
+        storage.remember_notes_dir(self.settings, file_path)
+        storage.save_settings(self.settings)
+
     def _apply_compact_layout(self):
         """Compact mode hides the form and uses the export live preview as the editor."""
         if self.compact:
@@ -493,6 +776,10 @@ class MainWindow(QMainWindow):
             self.splitter.setStretchFactor(1, 1)
             self.splitter.setStretchFactor(2, 0)
             self._apply_splitter_sizes()
+            if self.import_panel.isVisible():
+                self._ensure_side_panel_width(0, DEFAULT_SPLITTER_SIZES[0])
+            if self.export_panel.isVisible():
+                self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
 
     def _on_compact_toggled(self, checked: bool):
         self.compact = checked
@@ -663,6 +950,7 @@ class MainWindow(QMainWindow):
     def on_parse(self):
         fields = parse_notes(self.paste_box.toPlainText())
         self._set_fields(fields)
+        self._update_active_tab_title()
         self._set_status(f"Parsed {len(fields)} field{'s' if len(fields) != 1 else ''}.")
         self._schedule_save()
 
@@ -673,28 +961,13 @@ class MainWindow(QMainWindow):
             return
         merged, added, updated = merge_fields(self.collect_fields(), incoming)
         self._set_fields(merged)
+        self._update_active_tab_title()
         self._set_status(f"Merged: {added} added, {updated} updated.")
         self._schedule_save()
 
     def on_new_note(self):
-        if self.collect_fields() or self.paste_box.toPlainText().strip():
-            reply = QMessageBox.question(
-                self,
-                "New Note",
-                "Clear the paste area and the form?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-        self.paste_box.clear()
-        self._set_fields([])
-        self._apply_default_export_mode_from_settings()
-        if self._apply_template(DEFAULT_TEMPLATE_ID):
-            self._set_status("Started a new note from the default template.")
-        else:
-            self._set_status("Started a new note.")
-        self._schedule_save()
+        self._add_note_tab(apply_template=True)
+        self._set_status("Opened a new note tab from the default template.")
         self.paste_box.setFocus()
 
     def on_add_field(self):
@@ -748,21 +1021,70 @@ class MainWindow(QMainWindow):
         self.paste_box.setPlainText(text)
         self.on_parse()
 
+    def on_open(self):
+        start_dir = self._notes_dialog_dir()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open note",
+            start_dir,
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            QMessageBox.critical(self, "Open failed", f"Could not open the file:\n{exc}")
+            return
+
+        self._remember_notes_dir(path)
+        self._add_note_tab(apply_template=False)
+        self.paste_box.setPlainText(text)
+        index = self.note_tab_bar.currentIndex()
+        if 0 <= index < len(self._notes):
+            self._notes[index].title = Path(path).stem[:32]
+        self.on_parse()
+        self._capture_current_note()
+        self._schedule_save()
+        self._set_status(f"Opened {path}")
+        self.paste_box.setFocus()
+
     def on_copy(self):
         text = self.preview.toPlainText()
         QApplication.clipboard().setText(text)
         self._set_status("Export copied to clipboard.")
 
+    def _default_save_path(self) -> str:
+        index = self.note_tab_bar.currentIndex()
+        if 0 <= index < len(self._notes):
+            note = storage.NoteState(
+                id=self._notes[index].id,
+                title=self._notes[index].title,
+                fields=self.collect_fields(),
+                raw_import=self.paste_box.toPlainText(),
+            )
+            name = self._derive_tab_title(note, index)
+        else:
+            name = "notes"
+        filename = storage.safe_filename(name) + ".txt"
+        return str(Path(self._notes_dialog_dir()) / filename)
+
     def on_save(self):
         text = self.preview.toPlainText()
+        default_path = self._default_save_path()
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save notes as text", "notes.txt", "Text files (*.txt);;All files (*.*)"
+            self,
+            "Save notes as text",
+            default_path,
+            "Text files (*.txt);;All files (*.*)",
         )
         if not path:
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
+            self._remember_notes_dir(path)
             self._set_status(f"Saved to {path}")
         except OSError as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save the file:\n{exc}")
@@ -819,6 +1141,7 @@ class MainWindow(QMainWindow):
 
     def _on_row_changed(self):
         self._update_preview()
+        self._update_active_tab_title()
         self._schedule_save()
 
     def _on_row_copied(self, label: str):
@@ -880,6 +1203,7 @@ class MainWindow(QMainWindow):
             self._set_status(
                 f"Form updated from preview ({n} field{'s' if n != 1 else ''})."
             )
+        self._update_active_tab_title()
         self._schedule_save()
 
     def _set_status(self, message: str):
@@ -891,12 +1215,11 @@ class MainWindow(QMainWindow):
         self._save_timer.start()
 
     def _persist_draft(self):
-        storage.save_draft(
-            self.collect_fields(),
-            self.paste_box.toPlainText(),
-            self._current_export_mode(),
-            self.blank_check.isChecked(),
-        )
+        self._capture_current_note()
+        storage.save_workspace(storage.WorkspaceState(
+            active_index=max(0, self.note_tab_bar.currentIndex()),
+            notes=self._notes,
+        ))
 
     def _load_state(self):
         self.settings = storage.load_settings()
@@ -912,28 +1235,28 @@ class MainWindow(QMainWindow):
         self.set_theme(theme)
         self._update_rails()
 
-        draft = storage.load_draft()
-        self.paste_box.setPlainText(draft.get("raw_import", ""))
-
-        mode = draft.get("export_mode") or self.default_export_mode
-        idx = self.format_combo.findData(mode)
-        if idx >= 0:
-            self.format_combo.setCurrentIndex(idx)
-        blank = draft.get("blank_between")
-        if blank is not None:
-            self.blank_check.setChecked(bool(blank))
-
-        fields = draft.get("fields", [])
-        if fields:
-            self._set_fields(fields)
-            self._set_status(f"Restored draft with {len(fields)} field(s).")
-        elif not draft.get("raw_import", "").strip():
+        workspace = storage.load_workspace()
+        if not workspace.notes:
+            workspace.notes = [storage.NoteState(id=storage.new_note_id())]
+        active = workspace.notes[workspace.active_index]
+        if (
+            not active.fields
+            and not active.raw_import.strip()
+            and len(workspace.notes) == 1
+        ):
+            self._load_workspace_tabs(workspace)
             if self._apply_default_template():
+                self._capture_current_note()
+                self._refresh_tab_labels()
                 self._set_status("Loaded the default template.")
             else:
-                self._set_fields([])
+                self._set_status("Ready.")
         else:
-            self._set_fields([])
+            self._load_workspace_tabs(workspace)
+            self._set_status(
+                f"Restored {len(workspace.notes)} note tab"
+                f"{'s' if len(workspace.notes) != 1 else ''}."
+            )
 
     # -------------------------------------------------------------- dialogs
 
