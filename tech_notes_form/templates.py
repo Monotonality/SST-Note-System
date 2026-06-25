@@ -89,6 +89,33 @@ TEMPLATES: List[Template] = [
             "    Time/Date:\n"
         ),
     ),
+    Template(
+        id="jira_template",
+        name="JIRA",
+        description="JIRA ticket intake layout for agency, issue, and troubleshooting details.",
+        sample=(
+            "Description:\n"
+            "\n"
+            "Agency Name:\n"
+            "Agency State:\n"
+            "\n"
+            "Customer Issue Description:\n"
+            "\n"
+            "Additional Information:\n"
+            "\n"
+            "Specific Dates:\n"
+            "\n"
+            "Specific Times:\n"
+            "\n"
+            "REIDS:\n"
+            "\n"
+            "Previous Troubleshooting Attempts:\n"
+            "\n"
+            "State Capture File Location:\n"
+            "\n"
+            "Requester First/Last Name:\n"
+        ),
+    ),
 ]
 
 

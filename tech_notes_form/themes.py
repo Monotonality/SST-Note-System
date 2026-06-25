@@ -1,7 +1,7 @@
 """Theme palettes and Qt stylesheet generation.
 
 Themes include System (follows the OS), built-in light/dark palettes, and
-several custom looks (Ocean, Warm, Matrix, Dallas, JoeGreen, RedEye, etc.).
+several custom looks (Ocean, Warm, Matrix, Dallas, JoeGreen, RedEye, MarBlue, etc.).
 "System" resolves to either the Dark or Light palette based on the current
 Windows app theme (falls back to Light elsewhere).
 """
@@ -21,6 +21,7 @@ THEME_MATRIX = "matrix"
 THEME_DALLAS = "dallas"
 THEME_JOEGREEN = "joegreen"
 THEME_REDEYE = "redeye"
+THEME_MARBLUE = "marblue"
 
 THEME_CHOICES = [
     (THEME_SYSTEM, "System"),
@@ -34,6 +35,7 @@ THEME_CHOICES = [
     (THEME_DALLAS, "Dallas"),
     (THEME_JOEGREEN, "JoeGreen"),
     (THEME_REDEYE, "RedEye"),
+    (THEME_MARBLUE, "MarBlue"),
 ]
 
 
@@ -106,6 +108,12 @@ _PALETTES = {
         window="#000000", panel="#0C0003", input_bg="#000000", text="#FFAAB8",
         muted="#C4707C", border="#7A1828", accent="#FF4466", accent_text="#0A0002",
         accent_hover="#FF6B85", danger="#FFAA77",
+    ),
+    # MarBlue — MSI-inspired dark UI: charcoal surfaces, white type, #005EB8 accents.
+    THEME_MARBLUE: Palette(
+        window="#12151C", panel="#1A1F2B", input_bg="#222836", text="#F5F7FA",
+        muted="#8B93A7", border="#2E3545", accent="#005EB8", accent_text="#FFFFFF",
+        accent_hover="#00A3E0", danger="#E05555",
     ),
 }
 

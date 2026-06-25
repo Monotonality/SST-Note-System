@@ -234,11 +234,19 @@ class MainWindow(QMainWindow):
         )
         self.prefix_dash_btn.setAccessibleName("Prefix dash on selected lines")
         self.prefix_dash_btn.setCursor(Qt.PointingHandCursor)
+        self.prefix_bullet_btn = QPushButton("\u2022")
+        self.prefix_bullet_btn.setObjectName("IconButton")
+        self.prefix_bullet_btn.setToolTip(
+            "Prefix \"\u2022 \" on each line of the selected text"
+        )
+        self.prefix_bullet_btn.setAccessibleName("Prefix bullet on selected lines")
+        self.prefix_bullet_btn.setCursor(Qt.PointingHandCursor)
         self.new_btn = QPushButton("New note")
         self.new_btn.setToolTip("Open a new note tab with the default template (Ctrl+N)")
         buttons.addWidget(self.parse_btn)
         buttons.addWidget(self.merge_btn)
         buttons.addWidget(self.prefix_dash_btn)
+        buttons.addWidget(self.prefix_bullet_btn)
         buttons.addStretch(1)
         buttons.addWidget(self.new_btn)
         layout.addLayout(buttons)
@@ -255,6 +263,7 @@ class MainWindow(QMainWindow):
         self.parse_btn.clicked.connect(self.on_parse)
         self.merge_btn.clicked.connect(self.on_merge)
         self.prefix_dash_btn.clicked.connect(self.on_prefix_dash_lines)
+        self.prefix_bullet_btn.clicked.connect(self.on_prefix_bullet_lines_import)
         self.new_btn.clicked.connect(self.on_new_note)
         self.templates_btn.clicked.connect(self.on_templates)
         self.paste_box.pasted.connect(self._on_import_pasted)
@@ -315,8 +324,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.preview, 1)
 
         out_buttons = QHBoxLayout()
-        self.copy_btn = QPushButton("Copy text")
+        self.copy_btn = QPushButton("Copy")
         self.copy_btn.setToolTip("Copy the preview to the clipboard")
+        self.prefix_bullet_export_btn = QPushButton("\u2022")
+        self.prefix_bullet_export_btn.setObjectName("IconButton")
+        self.prefix_bullet_export_btn.setToolTip(
+            "Prefix \"\u2022 \" on each line of the selected text"
+        )
+        self.prefix_bullet_export_btn.setAccessibleName("Prefix bullet on selected lines")
+        self.prefix_bullet_export_btn.setCursor(Qt.PointingHandCursor)
         self.blank_check = QCheckBox("Blank lines")
         self.blank_check.setToolTip("Insert a blank line between fields in the export")
         self.blank_check.setAccessibleName("Blank line between fields")
@@ -324,6 +340,7 @@ class MainWindow(QMainWindow):
         self.save_btn.setObjectName("Primary")
         self.save_btn.setToolTip("Save the preview to a text file (Ctrl+S)")
         out_buttons.addWidget(self.copy_btn)
+        out_buttons.addWidget(self.prefix_bullet_export_btn)
         out_buttons.addWidget(self.blank_check)
         out_buttons.addStretch(1)
         out_buttons.addWidget(self.save_btn)
@@ -332,6 +349,7 @@ class MainWindow(QMainWindow):
         self.blank_check.stateChanged.connect(self._on_export_options_changed)
         self.preview.textChanged.connect(self._on_preview_edited)
         self.copy_btn.clicked.connect(self.on_copy)
+        self.prefix_bullet_export_btn.clicked.connect(self.on_prefix_bullet_lines_export)
         self.save_btn.clicked.connect(self.on_save)
 
         return frame
@@ -898,13 +916,16 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- actions
 
-    def on_prefix_dash_lines(self):
-        cursor = self.paste_box.textCursor()
+    def _prefix_selected_lines(
+        self,
+        widget: QPlainTextEdit | QTextEdit,
+        prefix: str,
+        already_prefixed: tuple[str, ...],
+    ) -> int:
+        cursor = widget.textCursor()
         if not cursor.hasSelection():
-            self._set_status('Select text in the paste area, then click Prefix "-".')
-            return
+            return -1
 
-        # QPlainTextEdit uses U+2029 between lines in selectedText().
         raw = cursor.selectedText().replace("\u2029", "\n")
         prefixed: list[str] = []
         changed = 0
@@ -913,19 +934,56 @@ class MainWindow(QMainWindow):
             if not stripped:
                 prefixed.append(line)
                 continue
-            if stripped.startswith("-"):
+            if any(stripped.startswith(marker) for marker in already_prefixed):
                 prefixed.append(line)
                 continue
             indent = line[: len(line) - len(stripped)]
-            prefixed.append(f"{indent}- {stripped}")
+            prefixed.append(f"{indent}{prefix}{stripped}")
             changed += 1
 
         cursor.insertText("\n".join(prefixed))
+        return changed
+
+    def on_prefix_dash_lines(self):
+        changed = self._prefix_selected_lines(self.paste_box, "- ", ("-",))
+        if changed < 0:
+            self._set_status('Select text in the paste area, then click Prefix "-".')
+            return
         self._schedule_save()
         if changed:
             self._set_status(f'Prefixed {changed} line{"s" if changed != 1 else ""} with "-".')
         else:
             self._set_status("Selected lines already start with \"-\".")
+
+    def on_prefix_bullet_lines_import(self):
+        changed = self._prefix_selected_lines(
+            self.paste_box, "\u2022 ", ("\u2022", "\u2022 ", "-", "- ")
+        )
+        if changed < 0:
+            self._set_status('Select text in the paste area, then click Prefix "\u2022".')
+            return
+        self._schedule_save()
+        if changed:
+            self._set_status(
+                f'Prefixed {changed} line{"s" if changed != 1 else ""} with "\u2022".'
+            )
+        else:
+            self._set_status("Selected lines already start with a bullet.")
+
+    def on_prefix_bullet_lines_export(self):
+        changed = self._prefix_selected_lines(
+            self.preview, "\u2022 ", ("\u2022", "\u2022 ", "-", "- ")
+        )
+        if changed < 0:
+            self._set_status('Select text in the preview, then click Prefix "\u2022".')
+            return
+        self._schedule_save()
+        if changed:
+            self._set_status(
+                f'Prefixed {changed} line{"s" if changed != 1 else ""} with "\u2022".'
+            )
+        else:
+            self._set_status("Selected lines already start with a bullet.")
 
     def on_parse(self):
         fields = parse_notes(self.paste_box.toPlainText())
