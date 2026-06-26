@@ -38,6 +38,12 @@ from .templates import DEFAULT_TEMPLATE_ID, resolve_template, template_choices
 from .widgets import (
     FieldRow,
     ImportPasteEdit,
+    KeyboardShortcutsDialog,
+    MIDDLE_PANEL_MINIMALIST,
+    MIDDLE_PANEL_STACKED,
+    MIDDLE_PANEL_WIDE,
+    flags_from_middle_panel_style,
+    middle_panel_style_from_flags,
     PARSE_MODE_MERGE,
     PARSE_MODE_PARSE,
     PreferencesDialog,
@@ -75,8 +81,10 @@ def _panel(title: str, collapse_glyph: str | None = None):
         collapse_btn.setCursor(Qt.PointingHandCursor)
         header.addWidget(collapse_btn)
 
-    outer.addLayout(header)
-    return frame, outer, collapse_btn
+    header_host = QWidget()
+    header_host.setLayout(header)
+    outer.addWidget(header_host)
+    return frame, outer, collapse_btn, header_host
 
 
 class MainWindow(QMainWindow):
@@ -91,7 +99,12 @@ class MainWindow(QMainWindow):
         self.settings: dict = {}
         self.persistent_sidebars = True
         self.compact = False
-        self.confirm_clear_values = True
+        self.form_wide_layout = False
+        self.middle_panel_style = MIDDLE_PANEL_STACKED
+        self.editable_labels = False
+        self.minimalist_mode = False
+        self.form_focus_on_open = False
+        self.confirm_dialogs = True
         self.import_panel_visible = True
         self.export_panel_visible = True
         self.remember_splitter_sizes = True
@@ -99,6 +112,8 @@ class MainWindow(QMainWindow):
         self.auto_parse_on_paste = False
         self.default_parse_mode = PARSE_MODE_PARSE
         self.default_export_mode = MODE_SAME_LINE
+        self.form_focus_mode = False
+        self._pre_focus_state: dict = {}
 
         # Debounced auto-save timer.
         self._save_timer = QTimer(self)
@@ -166,7 +181,9 @@ class MainWindow(QMainWindow):
         self._central_layout.setContentsMargins(12, 12, 12, 12)
         self._central_layout.setSpacing(8)
 
-        tab_row = QHBoxLayout()
+        self.tab_row_widget = QWidget()
+        tab_row = QHBoxLayout(self.tab_row_widget)
+        tab_row.setContentsMargins(0, 0, 0, 0)
         tab_row.setSpacing(6)
         self.note_tab_bar = QTabBar()
         self.note_tab_bar.setObjectName("NoteTabBar")
@@ -185,7 +202,7 @@ class MainWindow(QMainWindow):
         self.add_note_tab_btn.clicked.connect(self.on_new_note)
         tab_row.addWidget(self.add_note_tab_btn)
         tab_row.addStretch(1)
-        self._central_layout.addLayout(tab_row)
+        self._central_layout.addWidget(self.tab_row_widget)
 
         content_row = QWidget()
         content_layout = QHBoxLayout(content_row)
@@ -208,7 +225,7 @@ class MainWindow(QMainWindow):
         return rail
 
     def _build_import_panel(self) -> QWidget:
-        frame, layout, self._import_collapse_btn = _panel("Import", "\u00ab")
+        frame, layout, self._import_collapse_btn, _ = _panel("Import", "\u00ab")
 
         self.paste_box = ImportPasteEdit()
         self.paste_box.setPlaceholderText(
@@ -227,13 +244,6 @@ class MainWindow(QMainWindow):
         self.parse_btn.setToolTip("Replace the form with fields parsed from the paste area")
         self.merge_btn = QPushButton("Merge")
         self.merge_btn.setToolTip("Add or update fields from the paste area without clearing the form")
-        self.prefix_dash_btn = QPushButton("-")
-        self.prefix_dash_btn.setObjectName("IconButton")
-        self.prefix_dash_btn.setToolTip(
-            "Prefix \"- \" on each line of the selected text"
-        )
-        self.prefix_dash_btn.setAccessibleName("Prefix dash on selected lines")
-        self.prefix_dash_btn.setCursor(Qt.PointingHandCursor)
         self.prefix_bullet_btn = QPushButton("\u2022")
         self.prefix_bullet_btn.setObjectName("IconButton")
         self.prefix_bullet_btn.setToolTip(
@@ -245,7 +255,6 @@ class MainWindow(QMainWindow):
         self.new_btn.setToolTip("Open a new note tab with the default template (Ctrl+N)")
         buttons.addWidget(self.parse_btn)
         buttons.addWidget(self.merge_btn)
-        buttons.addWidget(self.prefix_dash_btn)
         buttons.addWidget(self.prefix_bullet_btn)
         buttons.addStretch(1)
         buttons.addWidget(self.new_btn)
@@ -262,7 +271,6 @@ class MainWindow(QMainWindow):
 
         self.parse_btn.clicked.connect(self.on_parse)
         self.merge_btn.clicked.connect(self.on_merge)
-        self.prefix_dash_btn.clicked.connect(self.on_prefix_dash_lines)
         self.prefix_bullet_btn.clicked.connect(self.on_prefix_bullet_lines_import)
         self.new_btn.clicked.connect(self.on_new_note)
         self.templates_btn.clicked.connect(self.on_templates)
@@ -271,7 +279,7 @@ class MainWindow(QMainWindow):
         return frame
 
     def _build_form_panel(self) -> QWidget:
-        frame, layout, _ = _panel("Form")
+        frame, layout, _, self.form_header_widget = _panel("Form")
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -308,12 +316,58 @@ class MainWindow(QMainWindow):
         form_buttons.addWidget(self.datetime_btn)
         form_buttons.addStretch(1)
         form_buttons.addWidget(self.add_field_btn)
-        layout.addLayout(form_buttons)
+        self.form_toolbar = QWidget()
+        self.form_toolbar.setLayout(form_buttons)
+        layout.addWidget(self.form_toolbar)
+
+        focus_buttons = QHBoxLayout()
+        self.focus_clear_btn = QPushButton("Clear values")
+        self.focus_clear_btn.setToolTip(
+            "Empty every field's value while keeping all labels and rows"
+        )
+        self.focus_clear_btn.clicked.connect(self.on_clear_form_values)
+        self.focus_new_note_btn = QPushButton("New note")
+        self.focus_new_note_btn.setToolTip(
+            "Open a new note tab with the default template (Ctrl+N)"
+        )
+        self.focus_new_note_btn.clicked.connect(self.on_new_note)
+        self.focus_bullet_btn = QPushButton("\u2022")
+        self.focus_bullet_btn.setObjectName("IconButton")
+        self.focus_bullet_btn.setToolTip(
+            "Prefix \"\u2022 \" on each line of the selected text (Ctrl+-)"
+        )
+        self.focus_bullet_btn.setAccessibleName("Prefix bullet on selected lines")
+        self.focus_bullet_btn.setCursor(Qt.PointingHandCursor)
+        self.focus_bullet_btn.clicked.connect(self.on_prefix_bullet_shortcut)
+        self.focus_datetime_btn = QPushButton("Date/time")
+        self.focus_datetime_btn.setToolTip(
+            "Insert the current date, time, and timezone at the cursor (Ctrl+Shift+T)"
+        )
+        self.focus_datetime_btn.setAccessibleName("Insert date and time")
+        self.focus_datetime_btn.clicked.connect(self.insert_datetime)
+        self.focus_copy_btn = QPushButton("Copy")
+        self.focus_copy_btn.setToolTip("Copy the export preview to the clipboard")
+        self.focus_copy_btn.clicked.connect(self.on_copy)
+        self.focus_save_btn = QPushButton("Save .txt")
+        self.focus_save_btn.setObjectName("Primary")
+        self.focus_save_btn.setToolTip("Save the export preview to a text file (Ctrl+S)")
+        self.focus_save_btn.clicked.connect(self.on_save)
+        focus_buttons.addWidget(self.focus_clear_btn)
+        focus_buttons.addWidget(self.focus_new_note_btn)
+        focus_buttons.addWidget(self.focus_bullet_btn)
+        focus_buttons.addWidget(self.focus_datetime_btn)
+        focus_buttons.addStretch(1)
+        focus_buttons.addWidget(self.focus_copy_btn)
+        focus_buttons.addWidget(self.focus_save_btn)
+        self.form_focus_toolbar = QWidget()
+        self.form_focus_toolbar.setLayout(focus_buttons)
+        self.form_focus_toolbar.setVisible(False)
+        layout.addWidget(self.form_focus_toolbar)
 
         return frame
 
     def _build_export_panel(self) -> QWidget:
-        frame, layout, self._export_collapse_btn = _panel("Export", "\u00bb")
+        frame, layout, self._export_collapse_btn, _ = _panel("Export", "\u00bb")
 
         layout.addWidget(QLabel("Live preview (editable):"))
         self.preview = QPlainTextEdit()
@@ -384,6 +438,33 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_insert_datetime)
         self.addAction(self.act_insert_datetime)
 
+        self.act_prefix_bullet = QAction("Prefix &bullet on selection", self)
+        self.act_prefix_bullet.setShortcut(QKeySequence("Ctrl+-"))
+        self.act_prefix_bullet.setToolTip(
+            "Prefix \"\u2022 \" on each line of the selected text (Ctrl+-)"
+        )
+        self.act_prefix_bullet.triggered.connect(self.on_prefix_bullet_shortcut)
+        file_menu.addAction(self.act_prefix_bullet)
+        self.addAction(self.act_prefix_bullet)
+
+        self.act_clear_values = QAction("&Clear field values", self)
+        self.act_clear_values.setShortcut(QKeySequence("Ctrl+Shift+Delete"))
+        self.act_clear_values.setToolTip(
+            "Clear every field value; labels and rows are kept (Ctrl+Shift+Delete)"
+        )
+        self.act_clear_values.triggered.connect(self.on_clear_form_values)
+        file_menu.addAction(self.act_clear_values)
+        self.addAction(self.act_clear_values)
+
+        self.act_clear_field = QAction("Clear &current field value", self)
+        self.act_clear_field.setShortcut(QKeySequence("Ctrl+Shift+Backspace"))
+        self.act_clear_field.setToolTip(
+            "Clear the focused field's value; label is kept (Ctrl+Shift+Backspace)"
+        )
+        self.act_clear_field.triggered.connect(self.on_clear_field_value)
+        file_menu.addAction(self.act_clear_field)
+        self.addAction(self.act_clear_field)
+
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence("Ctrl+Q"))
@@ -402,8 +483,9 @@ class MainWindow(QMainWindow):
             theme_menu.addAction(action)
             self._theme_actions[theme_id] = action
 
-        # Panel + preferences actions. Their shortcuts stay active because they
-        # live in the Preferences menu below.
+        # Panel + preferences actions. Import/export/compact shortcuts are also
+        # registered on the main window so they work while the menu bar is hidden
+        # in form focus mode.
         self.act_import = QAction("Show &Import Panel", self, checkable=True)
         self.act_import.setChecked(True)
         self.act_import.setShortcut(QKeySequence("Ctrl+1"))
@@ -421,6 +503,27 @@ class MainWindow(QMainWindow):
         )
         self.act_compact.toggled.connect(self._on_compact_toggled)
 
+        self.act_form_wide = QAction("&Wide form layout", self, checkable=True)
+        self.act_form_wide.setShortcut(QKeySequence("Ctrl+Shift+2"))
+        self.act_form_wide.setToolTip(
+            "Show labels and actions on the left, values on the right (Ctrl+Shift+2)"
+        )
+        self.act_form_wide.toggled.connect(self._on_form_wide_toggled)
+
+        self.act_edit_labels = QAction("&Editable field labels", self, checkable=True)
+        self.act_edit_labels.setShortcut(QKeySequence("Ctrl+E"))
+        self.act_edit_labels.setToolTip(
+            "Toggle editable label boxes (plain text when off; Ctrl+E)"
+        )
+        self.act_edit_labels.toggled.connect(self._on_editable_labels_toggled)
+
+        self.act_form_focus = QAction("&Form focus mode", self, checkable=True)
+        self.act_form_focus.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        self.act_form_focus.setToolTip(
+            "Maximize the form — hide side panels, tabs, and toolbars (Ctrl+Shift+F)"
+        )
+        self.act_form_focus.toggled.connect(self._on_form_focus_toggled)
+
         self.act_prefs = QAction("&Preferences\u2026", self)
         self.act_prefs.setShortcut(QKeySequence("Ctrl+,"))
         self.act_prefs.triggered.connect(self.open_preferences)
@@ -430,9 +533,24 @@ class MainWindow(QMainWindow):
         prefs_menu.addSeparator()
         prefs_menu.addAction(self.act_import)
         prefs_menu.addAction(self.act_compact)
+        prefs_menu.addAction(self.act_form_wide)
+        prefs_menu.addAction(self.act_edit_labels)
+        prefs_menu.addAction(self.act_form_focus)
         prefs_menu.addAction(self.act_export)
+        self.addAction(self.act_import)
+        self.addAction(self.act_export)
+        self.addAction(self.act_compact)
+        self.addAction(self.act_form_wide)
+        self.addAction(self.act_edit_labels)
+        self.addAction(self.act_form_focus)
 
         help_menu = menubar.addMenu("&Help")
+        shortcuts_action = QAction("&Keyboard Shortcuts", self)
+        shortcuts_action.setShortcut(QKeySequence(Qt.Key_F1))
+        shortcuts_action.triggered.connect(self._show_keyboard_shortcuts)
+        help_menu.addAction(shortcuts_action)
+        self.addAction(shortcuts_action)
+        help_menu.addSeparator()
         contact_action = QAction("&Request a Change / Get Help\u2026", self)
         contact_action.triggered.connect(self._show_contact)
         help_menu.addAction(contact_action)
@@ -453,18 +571,76 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- panels
 
     def _on_import_toggled(self, visible: bool):
+        if visible and self.form_focus_mode:
+            self._exit_form_focus_mode()
+        self.act_import.blockSignals(True)
+        self.act_import.setChecked(visible)
+        self.act_import.blockSignals(False)
         self.import_panel_visible = visible
         self.import_panel.setVisible(visible)
         if visible and not self.compact:
             self._ensure_side_panel_width(0, DEFAULT_SPLITTER_SIZES[0])
+            self._ensure_form_panel_width()
         self._update_rails()
 
     def _on_export_toggled(self, visible: bool):
+        if visible and self.form_focus_mode:
+            self._exit_form_focus_mode()
+        self.act_export.blockSignals(True)
+        self.act_export.setChecked(visible)
+        self.act_export.blockSignals(False)
         self.export_panel_visible = visible
         self.export_panel.setVisible(visible)
         if visible and not self.compact:
             self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
+            self._ensure_form_panel_width()
         self._update_rails()
+
+    def _enter_form_focus_mode(self) -> None:
+        if self.form_focus_mode:
+            return
+        self._save_pre_focus_state()
+        self.form_focus_mode = True
+        self.act_form_focus.blockSignals(True)
+        self.act_form_focus.setChecked(True)
+        self.act_form_focus.blockSignals(False)
+        self._apply_form_focus_layout()
+        self._update_rails()
+
+    def _exit_form_focus_mode(self) -> None:
+        if not self.form_focus_mode:
+            return
+        self.form_focus_mode = False
+        self.act_form_focus.blockSignals(True)
+        self.act_form_focus.setChecked(False)
+        self.act_form_focus.blockSignals(False)
+        self._restore_pre_focus_state()
+        self._sync_wide_focus_actions()
+
+    def _ensure_form_panel_width(self, target_width: int | None = None) -> None:
+        """Restore a usable width when the form panel was collapsed to zero."""
+        if self.compact:
+            return
+        target_width = target_width or DEFAULT_SPLITTER_SIZES[1]
+        sizes = list(self.splitter.sizes())
+        if len(sizes) != 3 or sizes[1] >= MIN_SIDE_PANEL_WIDTH:
+            return
+        deficit = target_width - sizes[1]
+        donated = 0
+        for index in (0, 2):
+            spare = sizes[index] - MIN_SIDE_PANEL_WIDTH
+            if spare <= 0:
+                continue
+            take = min(spare, deficit - donated)
+            sizes[index] -= take
+            donated += take
+            if donated >= deficit:
+                break
+        if donated < deficit:
+            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+            return
+        sizes[1] = target_width
+        self.splitter.setSizes(sizes)
 
     def _ensure_side_panel_width(self, panel_index: int, target_width: int) -> None:
         """Restore a usable width when a side panel is reopened from zero width."""
@@ -497,10 +673,13 @@ class MainWindow(QMainWindow):
             self,
             persistent_sidebars=self.persistent_sidebars,
             compact=self.compact,
-            confirm_clear_values=self.confirm_clear_values,
+            confirm_dialogs=self.confirm_dialogs,
+            middle_panel_style=self.middle_panel_style,
             import_panel_visible=self.import_panel_visible,
             export_panel_visible=self.export_panel_visible,
             remember_splitter_sizes=self.remember_splitter_sizes,
+            editable_labels=self.editable_labels,
+            form_focus_on_open=self.form_focus_on_open,
             default_template_id=self.default_template_id,
             template_choices=template_choices(),
             auto_parse_on_paste=self.auto_parse_on_paste,
@@ -511,29 +690,92 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
+        minimalist_before = self.minimalist_mode
         self.persistent_sidebars = values["persistent_sidebars"]
         self.compact = values["compact"]
-        self.confirm_clear_values = values["confirm_clear_values"]
+        self.confirm_dialogs = values["confirm_dialogs"]
+        self.minimalist_mode = values["minimalist_mode"]
+        self.middle_panel_style = values["middle_panel_style"]
         self.import_panel_visible = values["import_panel_visible"]
         self.export_panel_visible = values["export_panel_visible"]
         self.remember_splitter_sizes = values["remember_splitter_sizes"]
+        self.editable_labels = values["editable_labels"]
+        self.form_focus_on_open = values["form_focus_on_open"]
+        self.form_wide_layout = values["form_wide_layout"]
         self.default_template_id = values["default_template_id"]
         self.auto_parse_on_paste = values["auto_parse_on_paste"]
         self.default_parse_mode = values["default_parse_mode"]
         self.default_export_mode = values["default_export_mode"]
-        self.act_import.setChecked(self.import_panel_visible)
-        self.act_export.setChecked(self.export_panel_visible)
         self.act_compact.blockSignals(True)
         self.act_compact.setChecked(self.compact)
         self.act_compact.blockSignals(False)
-        if not self.remember_splitter_sizes:
-            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
-        self._apply_density()
-        self._apply_compact_layout()
+        self.act_form_wide.blockSignals(True)
+        self.act_form_wide.setChecked(self.form_wide_layout)
+        self.act_form_wide.blockSignals(False)
+        self.act_edit_labels.blockSignals(True)
+        self.act_edit_labels.setChecked(self.editable_labels)
+        self.act_edit_labels.blockSignals(False)
+        if self.minimalist_mode:
+            self._apply_minimalist_mode()
+        elif minimalist_before:
+            self._exit_minimalist_layout()
+            if self.form_focus_on_open and not self.compact:
+                self._enter_form_focus_mode()
+        else:
+            self.act_import.setChecked(self.import_panel_visible)
+            self.act_export.setChecked(self.export_panel_visible)
+            if not self.remember_splitter_sizes:
+                self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+            self._apply_density()
+            self._apply_compact_layout()
+            self._apply_form_wide_layout()
+            self._apply_editable_labels()
+            if self.form_focus_on_open:
+                self._enter_form_focus_mode()
         self.set_theme(self.current_theme)  # re-apply stylesheet + save
         self._update_rails()
         self._update_preview()
         self._save_settings()
+
+    def _apply_minimalist_mode(self) -> None:
+        """Form focus + wide layout with Import and Export hidden."""
+        self.compact = False
+        self.form_wide_layout = True
+        self.middle_panel_style = MIDDLE_PANEL_MINIMALIST
+        self.import_panel_visible = False
+        self.export_panel_visible = False
+        self.act_compact.blockSignals(True)
+        self.act_compact.setChecked(False)
+        self.act_compact.blockSignals(False)
+        self.act_form_wide.blockSignals(True)
+        self.act_form_wide.setChecked(True)
+        self.act_form_wide.blockSignals(False)
+        self.act_import.blockSignals(True)
+        self.act_import.setChecked(False)
+        self.act_export.blockSignals(True)
+        self.act_export.setChecked(False)
+        self.act_import.blockSignals(False)
+        self.act_export.blockSignals(False)
+        self.import_panel.hide()
+        self.export_panel.hide()
+        self._apply_density()
+        self._apply_form_wide_layout()
+        self._apply_editable_labels()
+        self._enter_form_focus_mode()
+        self._update_rails()
+
+    def _exit_minimalist_layout(self) -> None:
+        if self.form_focus_mode:
+            self.form_focus_mode = False
+            self.act_form_focus.blockSignals(True)
+            self.act_form_focus.setChecked(False)
+            self.act_form_focus.blockSignals(False)
+            self._restore_pre_focus_state()
+        else:
+            self._apply_panel_visibility()
+            self._apply_compact_layout()
+            self._apply_form_wide_layout()
+            self._update_rails()
 
     def _apply_density(self):
         margin = 4 if self.compact else 12
@@ -664,6 +906,19 @@ class MainWindow(QMainWindow):
                 self._on_note_tab_close(index)
                 return
 
+    def _confirm_action(self, title: str, text: str) -> bool:
+        """Return True if the user confirmed (or confirmations are disabled)."""
+        if not self.confirm_dialogs:
+            return True
+        reply = QMessageBox.question(
+            self,
+            title,
+            text,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
     def _on_note_tab_close(self, index: int) -> None:
         if len(self._notes) <= 1:
             QMessageBox.information(
@@ -674,15 +929,11 @@ class MainWindow(QMainWindow):
             return
         note = self._notes[index]
         if self._note_has_content(note):
-            reply = QMessageBox.question(
-                self,
+            if not self._confirm_action(
                 "Close note tab",
                 f"Close \"{self._derive_tab_title(note, index)}\"?\n\n"
                 "Unsaved work in this tab will be removed.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
+            ):
                 return
         was_active = index == self.note_tab_bar.currentIndex()
         self._switching_tabs = True
@@ -756,8 +1007,98 @@ class MainWindow(QMainWindow):
         storage.remember_notes_dir(self.settings, file_path)
         storage.save_settings(self.settings)
 
+    def _apply_form_focus_layout(self) -> None:
+        if not self.form_focus_mode:
+            return
+        self.tab_row_widget.setVisible(False)
+        self.menuBar().setVisible(False)
+        self.form_header_widget.setVisible(False)
+        self.form_toolbar.setVisible(False)
+        self.form_focus_toolbar.setVisible(True)
+        self.left_rail.setVisible(False)
+        self.right_rail.setVisible(False)
+        self.import_panel.hide()
+        self.export_panel.hide()
+        self.act_import.blockSignals(True)
+        self.act_export.blockSignals(True)
+        self.act_import.setChecked(False)
+        self.act_export.setChecked(False)
+        self.act_import.blockSignals(False)
+        self.act_export.blockSignals(False)
+        self.form_panel.show()
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        total = max(sum(self.splitter.sizes()), self.width(), 600)
+        self.splitter.setSizes([0, total, 0])
+        self._central_layout.setContentsMargins(2, 2, 2, 2)
+        self._sync_wide_focus_actions()
+
+    def _save_pre_focus_state(self) -> None:
+        self._pre_focus_state = {
+            "compact": self.compact,
+            "import_visible": self.act_import.isChecked(),
+            "export_visible": self.act_export.isChecked(),
+            "splitter_sizes": list(self.splitter.sizes()),
+            "margins": self._central_layout.getContentsMargins(),
+        }
+
+    def _restore_pre_focus_state(self) -> None:
+        state = self._pre_focus_state
+        self.tab_row_widget.setVisible(True)
+        self.menuBar().setVisible(True)
+        self.form_header_widget.setVisible(True)
+        self.form_toolbar.setVisible(True)
+        self.form_focus_toolbar.setVisible(False)
+
+        self.act_import.blockSignals(True)
+        self.act_export.blockSignals(True)
+        self.act_import.setChecked(state["import_visible"])
+        self.act_export.setChecked(state["export_visible"])
+        self.act_import.blockSignals(False)
+        self.act_export.blockSignals(False)
+        self.import_panel_visible = state["import_visible"]
+        self.export_panel_visible = state["export_visible"]
+        self.import_panel.setVisible(state["import_visible"])
+        self.export_panel.setVisible(state["export_visible"])
+
+        self.act_compact.blockSignals(True)
+        self.compact = state["compact"]
+        self.act_compact.setChecked(self.compact)
+        self.act_compact.blockSignals(False)
+
+        left, top, right, bottom = state["margins"]
+        self._central_layout.setContentsMargins(left, top, right, bottom)
+        self._apply_density()
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        if self.compact:
+            self._apply_compact_layout()
+        else:
+            self.form_panel.show()
+            self.splitter.setSizes(state["splitter_sizes"])
+            self._ensure_form_panel_width()
+            if self.import_panel.isVisible():
+                self._ensure_side_panel_width(0, DEFAULT_SPLITTER_SIZES[0])
+            if self.export_panel.isVisible():
+                self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
+        self._update_rails()
+
+    def _on_form_focus_toggled(self, checked: bool) -> None:
+        if checked and not self.form_focus_mode:
+            self._enter_form_focus_mode()
+            self._set_status("Form focus on — Ctrl+Shift+F to restore.")
+            return
+        if not checked and self.form_focus_mode:
+            self._exit_form_focus_mode()
+            self._set_status("Form focus off.")
+
     def _apply_compact_layout(self):
         """Compact mode hides the form and uses the export live preview as the editor."""
+        if self.form_focus_mode:
+            self._apply_form_focus_layout()
+            return
         if self.compact:
             self.form_panel.hide()
             if not self.export_panel.isVisible():
@@ -779,12 +1120,55 @@ class MainWindow(QMainWindow):
             self.splitter.setStretchFactor(1, 1)
             self.splitter.setStretchFactor(2, 0)
             self._apply_splitter_sizes()
+            self._ensure_form_panel_width()
             if self.import_panel.isVisible():
                 self._ensure_side_panel_width(0, DEFAULT_SPLITTER_SIZES[0])
             if self.export_panel.isVisible():
                 self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
 
+    def _sync_wide_focus_actions(self) -> None:
+        wide_focus = self.form_focus_mode and self.form_wide_layout
+        for row in self.field_rows:
+            row.set_wide_focus_actions(wide_focus)
+
+    def _apply_form_wide_layout(self) -> None:
+        self.rows_layout.setSpacing(2 if self.form_wide_layout else 8)
+        for row in self.field_rows:
+            row.set_wide_layout(self.form_wide_layout)
+        self._sync_wide_focus_actions()
+
+    def _apply_editable_labels(self) -> None:
+        for row in self.field_rows:
+            row.set_labels_editable(self.editable_labels)
+
+    def _on_editable_labels_toggled(self, checked: bool) -> None:
+        self.editable_labels = checked
+        self._apply_editable_labels()
+        self._save_settings()
+        if checked:
+            self._set_status("Editable labels on.")
+        else:
+            self._set_status("Editable labels off — compact plain-text labels.")
+
+    def _on_form_wide_toggled(self, checked: bool) -> None:
+        self.form_wide_layout = checked
+        if not self.minimalist_mode:
+            self.middle_panel_style = (
+                MIDDLE_PANEL_WIDE if checked else MIDDLE_PANEL_STACKED
+            )
+        self._apply_form_wide_layout()
+        self._save_settings()
+        if checked:
+            self._set_status("Wide form layout on — more fields visible at once.")
+        else:
+            self._set_status("Wide form layout off.")
+
     def _on_compact_toggled(self, checked: bool):
+        if checked and self.form_focus_mode:
+            self._exit_form_focus_mode()
+        self.act_compact.blockSignals(True)
+        self.act_compact.setChecked(checked)
+        self.act_compact.blockSignals(False)
         self.compact = checked
         self._apply_density()
         self._apply_compact_layout()
@@ -798,21 +1182,48 @@ class MainWindow(QMainWindow):
         s = self.settings
         self.persistent_sidebars = bool(s.get("persistent_sidebars", True))
         self.compact = bool(s.get("compact", False))
-        self.confirm_clear_values = bool(s.get("confirm_clear_values", True))
-        self.import_panel_visible = bool(s.get("import_panel_visible", True))
-        self.export_panel_visible = bool(s.get("export_panel_visible", True))
+        self.editable_labels = bool(s.get("editable_labels", False))
+        self.confirm_dialogs = bool(
+            s.get("confirm_dialogs", s.get("confirm_clear_values", True))
+        )
+        if "middle_panel_style" in s:
+            self.middle_panel_style = s["middle_panel_style"]
+            self.form_wide_layout, self.minimalist_mode = (
+                flags_from_middle_panel_style(self.middle_panel_style)
+            )
+        else:
+            self.minimalist_mode = bool(s.get("minimalist_mode", False))
+            if self.minimalist_mode:
+                self.form_wide_layout = True
+            else:
+                self.form_wide_layout = bool(s.get("form_wide_layout", False))
+            self.middle_panel_style = middle_panel_style_from_flags(
+                self.form_wide_layout, self.minimalist_mode
+            )
+        if self.minimalist_mode:
+            self.import_panel_visible = False
+            self.export_panel_visible = False
+            self.compact = False
+        else:
+            self.import_panel_visible = bool(s.get("import_panel_visible", True))
+            self.export_panel_visible = bool(s.get("export_panel_visible", True))
         self.remember_splitter_sizes = bool(s.get("remember_splitter_sizes", True))
         self.default_template_id = s.get("default_template_id", DEFAULT_TEMPLATE_ID)
         self.auto_parse_on_paste = bool(s.get("auto_parse_on_paste", False))
         self.default_parse_mode = s.get("default_parse_mode", PARSE_MODE_PARSE)
         self.default_export_mode = s.get("default_export_mode", MODE_SAME_LINE)
+        self.form_focus_on_open = bool(s.get("form_focus_on_open", False))
 
     def _save_settings(self):
         self.settings.update({
             "theme": self.current_theme,
             "persistent_sidebars": self.persistent_sidebars,
             "compact": self.compact,
-            "confirm_clear_values": self.confirm_clear_values,
+            "form_wide_layout": self.form_wide_layout,
+            "middle_panel_style": self.middle_panel_style,
+            "editable_labels": self.editable_labels,
+            "minimalist_mode": self.minimalist_mode,
+            "confirm_dialogs": self.confirm_dialogs,
             "import_panel_visible": self.import_panel_visible,
             "export_panel_visible": self.export_panel_visible,
             "remember_splitter_sizes": self.remember_splitter_sizes,
@@ -820,9 +1231,12 @@ class MainWindow(QMainWindow):
             "auto_parse_on_paste": self.auto_parse_on_paste,
             "default_parse_mode": self.default_parse_mode,
             "default_export_mode": self.default_export_mode,
+            "form_focus_on_open": self.form_focus_on_open,
         })
-        if self.remember_splitter_sizes:
-            self.settings["splitter_sizes"] = self.splitter.sizes()
+        if self.remember_splitter_sizes and not self.compact and not self.form_focus_mode:
+            sizes = self.splitter.sizes()
+            if len(sizes) == 3 and sizes[1] >= MIN_SIDE_PANEL_WIDTH:
+                self.settings["splitter_sizes"] = sizes
         storage.save_settings(self.settings)
 
     def _apply_panel_visibility(self):
@@ -838,21 +1252,26 @@ class MainWindow(QMainWindow):
     def _apply_splitter_sizes(self):
         if not self.remember_splitter_sizes:
             self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
-            return
-        sizes = self.settings.get("splitter_sizes")
-        if isinstance(sizes, list) and len(sizes) == 3:
-            self.splitter.setSizes(sizes)
         else:
-            self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+            sizes = self.settings.get("splitter_sizes")
+            if isinstance(sizes, list) and len(sizes) == 3:
+                self.splitter.setSizes(sizes)
+            else:
+                self.splitter.setSizes(DEFAULT_SPLITTER_SIZES)
+        if not self.compact:
+            self._ensure_form_panel_width()
 
     def _on_splitter_moved(self, *_):
         if self.remember_splitter_sizes:
             self._splitter_save_timer.start()
 
     def _persist_splitter_sizes(self):
-        if not self.remember_splitter_sizes or self.compact:
+        if not self.remember_splitter_sizes or self.compact or self.form_focus_mode:
             return
-        self.settings["splitter_sizes"] = self.splitter.sizes()
+        sizes = self.splitter.sizes()
+        if len(sizes) != 3 or sizes[1] < MIN_SIDE_PANEL_WIDTH:
+            return
+        self.settings["splitter_sizes"] = sizes
         storage.save_settings(self.settings)
 
     def _run_default_parse(self):
@@ -944,46 +1363,39 @@ class MainWindow(QMainWindow):
         cursor.insertText("\n".join(prefixed))
         return changed
 
-    def on_prefix_dash_lines(self):
-        changed = self._prefix_selected_lines(self.paste_box, "- ", ("-",))
+    def _prefix_bullet_in_widget(self, widget: QPlainTextEdit | QTextEdit) -> int:
+        return self._prefix_selected_lines(
+            widget, "\u2022 ", ("\u2022", "\u2022 ", "-", "- ")
+        )
+
+    def _report_bullet_prefix(self, widget: QPlainTextEdit | QTextEdit, changed: int) -> None:
         if changed < 0:
-            self._set_status('Select text in the paste area, then click Prefix "-".')
+            self._set_status('Select text, then press Ctrl+- or click "\u2022" to add bullets.')
             return
         self._schedule_save()
         if changed:
-            self._set_status(f'Prefixed {changed} line{"s" if changed != 1 else ""} with "-".')
+            self._set_status(
+                f'Prefixed {changed} line{"s" if changed != 1 else ""} with "\u2022".'
+            )
         else:
-            self._set_status("Selected lines already start with \"-\".")
+            self._set_status("Selected lines already start with a bullet.")
+
+    def on_prefix_bullet_shortcut(self):
+        focused = self.focusWidget()
+        if isinstance(focused, (QPlainTextEdit, QTextEdit)):
+            target = focused
+        elif isinstance(self._last_text_focus, (QPlainTextEdit, QTextEdit)):
+            target = self._last_text_focus
+        else:
+            self._set_status('Select text, then press Ctrl+- to add bullets.')
+            return
+        self._report_bullet_prefix(target, self._prefix_bullet_in_widget(target))
 
     def on_prefix_bullet_lines_import(self):
-        changed = self._prefix_selected_lines(
-            self.paste_box, "\u2022 ", ("\u2022", "\u2022 ", "-", "- ")
-        )
-        if changed < 0:
-            self._set_status('Select text in the paste area, then click Prefix "\u2022".')
-            return
-        self._schedule_save()
-        if changed:
-            self._set_status(
-                f'Prefixed {changed} line{"s" if changed != 1 else ""} with "\u2022".'
-            )
-        else:
-            self._set_status("Selected lines already start with a bullet.")
+        self._report_bullet_prefix(self.paste_box, self._prefix_bullet_in_widget(self.paste_box))
 
     def on_prefix_bullet_lines_export(self):
-        changed = self._prefix_selected_lines(
-            self.preview, "\u2022 ", ("\u2022", "\u2022 ", "-", "- ")
-        )
-        if changed < 0:
-            self._set_status('Select text in the preview, then click Prefix "\u2022".')
-            return
-        self._schedule_save()
-        if changed:
-            self._set_status(
-                f'Prefixed {changed} line{"s" if changed != 1 else ""} with "\u2022".'
-            )
-        else:
-            self._set_status("Selected lines already start with a bullet.")
+        self._report_bullet_prefix(self.preview, self._prefix_bullet_in_widget(self.preview))
 
     def on_parse(self):
         fields = parse_notes(self.paste_box.toPlainText())
@@ -1022,16 +1434,11 @@ class MainWindow(QMainWindow):
         has_values = any(
             row.to_field().value.strip() for row in self.field_rows
         )
-        if has_values and self.confirm_clear_values:
-            reply = QMessageBox.question(
-                self,
-                "Clear values",
-                "Clear every field's value?\n\nField labels and rows will be kept.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
+        if has_values and not self._confirm_action(
+            "Clear values",
+            "Clear every field's value?\n\nField labels and rows will be kept.",
+        ):
+            return
         for row in self.field_rows:
             row.clear_value()
         self._update_preview()
@@ -1041,11 +1448,39 @@ class MainWindow(QMainWindow):
             f"Cleared values in {n} field{'s' if n != 1 else ''}. Labels kept."
         )
 
+    def _field_row_for_widget(self, widget: QWidget | None) -> FieldRow | None:
+        while widget is not None:
+            if isinstance(widget, FieldRow):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def on_clear_field_value(self):
+        focused = self.focusWidget()
+        if focused is None:
+            focused = self._last_text_focus
+        row = self._field_row_for_widget(focused)
+        if row is None:
+            self._set_status(
+                "Click in a field value box, then press Ctrl+Shift+Backspace."
+            )
+            return
+        label = row.to_field().label.strip() or "field"
+        if not row.to_field().value.strip():
+            self._set_status(f"'{label}' is already empty.")
+            return
+        row.clear_value()
+        self._update_preview()
+        self._schedule_save()
+        self._set_status(f"Cleared value for '{label}'.")
+
     def on_templates(self):
         note_text = self.preview.toPlainText()
         if not note_text.strip():
             note_text = self.paste_box.toPlainText()
-        dialog = TemplatesDialog(self, current_note_text=note_text)
+        dialog = TemplatesDialog(
+            self, current_note_text=note_text, confirm_dialogs=self.confirm_dialogs
+        )
         dialog.loadRequested.connect(self._load_template_text)
         dialog.loadAndParseRequested.connect(self._load_and_parse_template_text)
         dialog.exec()
@@ -1089,6 +1524,7 @@ class MainWindow(QMainWindow):
         self.paste_box.setFocus()
 
     def on_copy(self):
+        self._update_preview()
         text = self.preview.toPlainText()
         QApplication.clipboard().setText(text)
         self._set_status("Export copied to clipboard.")
@@ -1144,20 +1580,13 @@ class MainWindow(QMainWindow):
     def _add_row(self, field: Field):
         row = FieldRow(field, default_export_mode=self._current_export_mode())
         row.changed.connect(self._on_row_changed)
-        row.removeRequested.connect(self._remove_row)
         row.copied.connect(self._on_row_copied)
+        row.set_wide_layout(self.form_wide_layout)
+        row.set_labels_editable(self.editable_labels)
+        row.set_wide_focus_actions(self.form_focus_mode and self.form_wide_layout)
         # Insert before the trailing stretch item.
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
         self.field_rows.append(row)
-
-    def _remove_row(self, row: FieldRow):
-        if row in self.field_rows:
-            self.field_rows.remove(row)
-        self.rows_layout.removeWidget(row)
-        row.deleteLater()
-        self._update_empty_state()
-        self._update_preview()
-        self._schedule_save()
 
     def _set_fields(self, fields: List[Field]):
         for row in list(self.field_rows):
@@ -1265,11 +1694,23 @@ class MainWindow(QMainWindow):
         self.act_compact.blockSignals(True)
         self.act_compact.setChecked(self.compact)
         self.act_compact.blockSignals(False)
+        self.act_form_wide.blockSignals(True)
+        self.act_form_wide.setChecked(self.form_wide_layout)
+        self.act_form_wide.blockSignals(False)
+        self.act_edit_labels.blockSignals(True)
+        self.act_edit_labels.setChecked(self.editable_labels)
+        self.act_edit_labels.blockSignals(False)
         theme = self.settings.get("theme", themes.THEME_SYSTEM)
         self._apply_density()
         self._apply_panel_visibility()
         self._apply_splitter_sizes()
         self._apply_compact_layout()
+        self._apply_form_wide_layout()
+        self._apply_editable_labels()
+        if self.minimalist_mode:
+            self._apply_minimalist_mode()
+        elif self.form_focus_on_open and not self.compact:
+            self._enter_form_focus_mode()
         self.set_theme(theme)
         self._update_rails()
 
@@ -1297,6 +1738,9 @@ class MainWindow(QMainWindow):
             )
 
     # -------------------------------------------------------------- dialogs
+
+    def _show_keyboard_shortcuts(self):
+        KeyboardShortcutsDialog(self).exec()
 
     def _show_about(self):
         from . import __version__

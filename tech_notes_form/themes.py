@@ -182,6 +182,11 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
     }}
     #PanelTitle {{ font-size: {title_font}px; font-weight: 600; }}
     #StatusLabel {{ color: {p.muted}; }}
+    #ShortcutKey {{
+        font-family: Consolas, "Courier New", monospace;
+        font-weight: 600;
+        color: {p.text};
+    }}
     #EmptyState {{ color: {p.muted}; font-style: italic; }}
 
     #FieldCard {{
@@ -193,6 +198,21 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
         font-size: {field_font}px;
         font-weight: 600;
         background-color: {p.input_bg};
+    }}
+    QLabel#FieldLabelText {{
+        font-size: {field_font}px;
+        font-weight: 600;
+        color: {p.text};
+        padding: 2px 0;
+    }}
+    QLabel#FieldLabelTextWide {{
+        font-size: {field_font}px;
+        font-weight: 600;
+        color: {p.text};
+        padding: 0 6px 0 0;
+    }}
+    QTextEdit#FieldValueWide {{
+        padding: 2px 6px;
     }}
 
     QLabel {{ background: transparent; }}
