@@ -12,6 +12,10 @@ Supported layouts (mixable within a single paste):
 The parser tolerates inconsistent spacing and casing, and treats orphan
 lines (text without a colon that is not part of a recognised block) as a
 continuation of the previous value.
+
+List items (``*``, ``-``, numbered) and timestamps (``23:00``) are not
+treated as field boundaries. Inside a multi-line block, only a following
+section header (``Label:`` with no value on the same line) ends the block.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ from typing import List
 # A line is treated as a "label line" when it has a colon and the text before
 # the first colon is a plausible label (not empty, not absurdly long).
 _LABEL_RE = re.compile(r"^\s*(?P<label>[^:]+?)\s*:\s*(?P<value>.*?)\s*$")
+
+# Bullets and numbered list items are block content, not field headers.
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[\*\-•]|\d+\.)\s")
 
 # Maximum length of a label before we stop treating the line as a field.
 _MAX_LABEL_LEN = 60
@@ -46,8 +53,32 @@ class Field:
         return self.label.strip().lower()
 
 
+def _colon_is_time_separator(line: str) -> bool:
+    """True when the first ``:`` in *line* separates hours and minutes (e.g. ``23:00``)."""
+    idx = line.find(":")
+    if idx <= 0:
+        return False
+    i = idx - 1
+    while i >= 0 and line[i].isdigit():
+        i -= 1
+    hour_len = idx - 1 - i
+    if hour_len < 1 or hour_len > 2:
+        return False
+    rest = line[idx + 1:]
+    if len(rest) < 2 or not rest[:2].isdigit():
+        return False
+    # Reject version-like ``4:21`` where more digits follow the minutes.
+    if len(rest) > 2 and rest[2].isdigit():
+        return False
+    return True
+
+
 def _is_label_line(line: str):
     """Return an ``(label, value)`` tuple if *line* looks like a field, else None."""
+    if _LIST_ITEM_RE.match(line):
+        return None
+    if _colon_is_time_separator(line):
+        return None
     m = _LABEL_RE.match(line)
     if not m:
         return None
@@ -62,6 +93,12 @@ def _is_label_line(line: str):
     return label, value
 
 
+def _is_section_header_line(line: str) -> bool:
+    """True when *line* opens a new top-level section (``Label:`` with no value)."""
+    parsed = _is_label_line(line)
+    return parsed is not None and parsed[1] == ""
+
+
 def _collect_block_value(lines: List[str], start: int) -> tuple[str, int]:
     """Read a multi-line value starting at *start*.
 
@@ -74,13 +111,13 @@ def _collect_block_value(lines: List[str], start: int) -> tuple[str, int]:
     n = len(lines)
     while j < n:
         line = lines[j]
-        if line.strip() and _is_label_line(line) is not None:
+        if line.strip() and _is_section_header_line(line):
             break
         if not line.strip():
             k = j + 1
             while k < n and not lines[k].strip():
                 k += 1
-            if k < n and _is_label_line(lines[k]) is not None:
+            if k < n and _is_section_header_line(lines[k]):
                 break
             if parts:
                 parts.append("")
@@ -127,7 +164,7 @@ def parse_notes(text: str) -> List[Field]:
                 j = i + 1
                 while j < n and not lines[j].strip():
                     j += 1
-                if j < n and _is_label_line(lines[j]) is None:
+                if j < n and not _is_section_header_line(lines[j]):
                     block_value, j = _collect_block_value(lines, j)
                     fields.append(Field(
                         label=label,
