@@ -962,7 +962,7 @@ class MainWindow(QMainWindow):
         self.paste_box.clear()
         self._set_fields([])
         if apply_template:
-            self._apply_template(DEFAULT_TEMPLATE_ID)
+            self._apply_default_template()
         self._capture_current_note()
         self._schedule_save()
 
