@@ -6,16 +6,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -31,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import APP_NAME, __version__
-from . import exporter, storage, themes
+from . import exporter, running_notes, storage, themes
 from .exporter import EXPORT_MODES, MODE_SAME_LINE
 from .parser import Field, merge_fields, parse_notes
 from .templates import DEFAULT_TEMPLATE_ID, resolve_template, template_choices
@@ -114,6 +117,8 @@ class MainWindow(QMainWindow):
         self.default_export_mode = MODE_SAME_LINE
         self.form_focus_mode = False
         self._pre_focus_state: dict = {}
+        self.running_notes_mode = False
+        self._search_hits: List[storage.SearchHit] = []
 
         # Debounced auto-save timer.
         self._save_timer = QTimer(self)
@@ -128,6 +133,17 @@ class MainWindow(QMainWindow):
         self._preview_sync_timer.setInterval(450)
         self._preview_sync_timer.setSingleShot(True)
         self._preview_sync_timer.timeout.connect(self._sync_form_from_preview)
+
+        self._search_timer = QTimer(self)
+        self._search_timer.setInterval(220)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._run_search)
+
+        self._running_notes_sync_timer = QTimer(self)
+        self._running_notes_sync_timer.setInterval(500)
+        self._running_notes_sync_timer.setSingleShot(True)
+        self._running_notes_sync_timer.timeout.connect(self._sync_from_running_notes)
+        self._updating_running_notes = False
 
         self._splitter_save_timer = QTimer(self)
         self._splitter_save_timer.setInterval(400)
@@ -201,8 +217,28 @@ class MainWindow(QMainWindow):
         self.add_note_tab_btn.setFixedWidth(28)
         self.add_note_tab_btn.clicked.connect(self.on_new_note)
         tab_row.addWidget(self.add_note_tab_btn)
+
+        self.search_toggle_btn = QPushButton("Search")
+        self.search_toggle_btn.setToolTip("Search open notes and saved .txt files (Ctrl+F)")
+        self.search_toggle_btn.setAccessibleName("Toggle note search")
+        self.search_toggle_btn.setCheckable(True)
+        self.search_toggle_btn.clicked.connect(self._on_search_toggle_clicked)
+        tab_row.addWidget(self.search_toggle_btn)
+
+        self.running_notes_btn = QPushButton("Running notes")
+        self.running_notes_btn.setToolTip(
+            "Edit all open notes as one continuous document (Ctrl+Shift+R)"
+        )
+        self.running_notes_btn.setAccessibleName("Toggle running notes view")
+        self.running_notes_btn.setCheckable(True)
+        self.running_notes_btn.clicked.connect(self._on_running_notes_btn_clicked)
+        tab_row.addWidget(self.running_notes_btn)
         tab_row.addStretch(1)
         self._central_layout.addWidget(self.tab_row_widget)
+
+        self.search_panel = self._build_search_panel()
+        self.search_panel.setVisible(False)
+        self._central_layout.addWidget(self.search_panel)
 
         content_row = QWidget()
         content_layout = QHBoxLayout(content_row)
@@ -212,6 +248,11 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.splitter, 1)
         content_layout.addWidget(self.right_rail)
         self._central_layout.addWidget(content_row, 1)
+        self._content_row = content_row
+
+        self.running_notes_panel = self._build_running_notes_panel()
+        self.running_notes_panel.setVisible(False)
+        self._central_layout.addWidget(self.running_notes_panel, 1)
         self.setCentralWidget(container)
 
     def _make_rail(self, glyph: str, tooltip: str) -> QPushButton:
@@ -223,6 +264,128 @@ class MainWindow(QMainWindow):
         rail.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         rail.setVisible(False)
         return rail
+
+    def _build_search_panel(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("SearchPanel")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("SearchInput")
+        self.search_input.setPlaceholderText(
+            "Search open notes and saved .txt files…"
+        )
+        self.search_input.setAccessibleName("Note search")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        self.search_input.returnPressed.connect(self._activate_first_search_hit)
+        row.addWidget(self.search_input, 1)
+
+        self.search_close_btn = QPushButton("\u00d7")
+        self.search_close_btn.setObjectName("IconButton")
+        self.search_close_btn.setToolTip("Close search")
+        self.search_close_btn.setAccessibleName("Close search")
+        self.search_close_btn.clicked.connect(self._hide_search_panel)
+        row.addWidget(self.search_close_btn)
+        layout.addLayout(row)
+
+        self.search_status = QLabel("Type to search all notes.")
+        self.search_status.setObjectName("StatusLabel")
+        layout.addWidget(self.search_status)
+
+        self.search_results = QListWidget()
+        self.search_results.setObjectName("SearchResults")
+        self.search_results.setAccessibleName("Search results")
+        self.search_results.setMaximumHeight(180)
+        self.search_results.itemActivated.connect(self._on_search_result_activated)
+        self.search_results.itemClicked.connect(self._on_search_result_activated)
+        layout.addWidget(self.search_results)
+
+        # Esc closes the pop-down when focus is in the search UI.
+        for widget in (self.search_input, self.search_results):
+            widget.installEventFilter(self)
+        return frame
+
+    def _build_running_notes_panel(self) -> QWidget:
+        frame, layout, _, header = _panel("Running notes")
+        self.running_notes_header = header
+        hint = QLabel(
+            "All open notes in one document. Edits sync back to each note "
+            "(and its saved .txt file when one is linked). Keep the "
+            "<<<NOTE:…>>> markers so sections stay mapped."
+        )
+        hint.setObjectName("StatusLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        find_row = QHBoxLayout()
+        find_row.setSpacing(8)
+        self.running_notes_find_input = QLineEdit()
+        self.running_notes_find_input.setObjectName("SearchInput")
+        self.running_notes_find_input.setPlaceholderText(
+            "Find in running notes…"
+        )
+        self.running_notes_find_input.setAccessibleName("Find in running notes")
+        self.running_notes_find_input.setClearButtonEnabled(True)
+        self.running_notes_find_input.textChanged.connect(
+            self._on_running_notes_find_text_changed
+        )
+        find_row.addWidget(self.running_notes_find_input, 1)
+
+        self.running_notes_find_prev_btn = QPushButton("Prev")
+        self.running_notes_find_prev_btn.setToolTip("Previous match (Shift+Enter)")
+        self.running_notes_find_prev_btn.setAccessibleName("Previous match")
+        self.running_notes_find_prev_btn.clicked.connect(
+            self._find_prev_in_running_notes
+        )
+        find_row.addWidget(self.running_notes_find_prev_btn)
+
+        self.running_notes_find_next_btn = QPushButton("Next")
+        self.running_notes_find_next_btn.setToolTip("Next match (Enter)")
+        self.running_notes_find_next_btn.setAccessibleName("Next match")
+        self.running_notes_find_next_btn.clicked.connect(
+            self._find_next_in_running_notes
+        )
+        find_row.addWidget(self.running_notes_find_next_btn)
+
+        self.running_notes_find_status = QLabel("")
+        self.running_notes_find_status.setObjectName("StatusLabel")
+        self.running_notes_find_status.setMinimumWidth(90)
+        find_row.addWidget(self.running_notes_find_status)
+        layout.addLayout(find_row)
+
+        self.running_notes_edit = QPlainTextEdit()
+        self.running_notes_edit.setObjectName("RunningNotesEdit")
+        self.running_notes_edit.setAccessibleName("Running notes editor")
+        self.running_notes_edit.setPlaceholderText(
+            "Open notes will appear here as one continuous document."
+        )
+        self.running_notes_edit.textChanged.connect(self._on_running_notes_edited)
+        layout.addWidget(self.running_notes_edit, 1)
+
+        buttons = QHBoxLayout()
+        self.running_notes_refresh_btn = QPushButton("Refresh from notes")
+        self.running_notes_refresh_btn.setToolTip(
+            "Rebuild this document from the current open notes"
+        )
+        self.running_notes_refresh_btn.clicked.connect(self._refresh_running_notes_view)
+        self.running_notes_exit_btn = QPushButton("Exit running notes")
+        self.running_notes_exit_btn.setObjectName("Primary")
+        self.running_notes_exit_btn.setToolTip("Return to the normal note editor")
+        self.running_notes_exit_btn.clicked.connect(
+            lambda: self.act_running_notes.setChecked(False)
+        )
+        buttons.addWidget(self.running_notes_refresh_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(self.running_notes_exit_btn)
+        layout.addLayout(buttons)
+
+        self.running_notes_find_input.installEventFilter(self)
+        return frame
 
     def _build_import_panel(self) -> QWidget:
         frame, layout, self._import_collapse_btn, _ = _panel("Import", "\u00ab")
@@ -422,6 +585,13 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.on_open)
         file_menu.addAction(open_action)
 
+        self.act_search = QAction("&Search notes\u2026", self)
+        self.act_search.setShortcut(QKeySequence.Find)  # Ctrl+F
+        self.act_search.setToolTip("Search open notes and saved .txt files")
+        self.act_search.triggered.connect(self._show_search_panel)
+        file_menu.addAction(self.act_search)
+        self.addAction(self.act_search)
+
         save_action = QAction("&Save Export\u2026", self)
         save_action.setShortcut(QKeySequence.Save)  # Ctrl+S
         save_action.triggered.connect(self.on_save)
@@ -524,6 +694,13 @@ class MainWindow(QMainWindow):
         )
         self.act_form_focus.toggled.connect(self._on_form_focus_toggled)
 
+        self.act_running_notes = QAction("&Running notes", self, checkable=True)
+        self.act_running_notes.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.act_running_notes.setToolTip(
+            "Edit all open notes as one continuous document (Ctrl+Shift+R)"
+        )
+        self.act_running_notes.toggled.connect(self._on_running_notes_toggled)
+
         self.act_prefs = QAction("&Preferences\u2026", self)
         self.act_prefs.setShortcut(QKeySequence("Ctrl+,"))
         self.act_prefs.triggered.connect(self.open_preferences)
@@ -536,6 +713,7 @@ class MainWindow(QMainWindow):
         prefs_menu.addAction(self.act_form_wide)
         prefs_menu.addAction(self.act_edit_labels)
         prefs_menu.addAction(self.act_form_focus)
+        prefs_menu.addAction(self.act_running_notes)
         prefs_menu.addAction(self.act_export)
         self.addAction(self.act_import)
         self.addAction(self.act_export)
@@ -543,6 +721,11 @@ class MainWindow(QMainWindow):
         self.addAction(self.act_form_wide)
         self.addAction(self.act_edit_labels)
         self.addAction(self.act_form_focus)
+        self.addAction(self.act_running_notes)
+
+        view_menu.addSeparator()
+        view_menu.addAction(self.act_search)
+        view_menu.addAction(self.act_running_notes)
 
         help_menu = menubar.addMenu("&Help")
         shortcuts_action = QAction("&Keyboard Shortcuts", self)
@@ -599,6 +782,8 @@ class MainWindow(QMainWindow):
     def _enter_form_focus_mode(self) -> None:
         if self.form_focus_mode:
             return
+        if self.running_notes_mode:
+            self._exit_running_notes_mode()
         self._save_pre_focus_state()
         self.form_focus_mode = True
         self.act_form_focus.blockSignals(True)
@@ -828,11 +1013,14 @@ class MainWindow(QMainWindow):
             raw_import=self.paste_box.toPlainText(),
             export_mode=self._current_export_mode(),
             blank_between=self.blank_check.isChecked(),
+            source_path=self._notes[index].source_path,
         )
         if self.note_tab_bar.currentIndex() == index:
             self.note_tab_bar.setTabText(index, title)
 
     def _capture_current_note(self) -> None:
+        if self.running_notes_mode:
+            return
         self._save_ui_to_note(self.note_tab_bar.currentIndex())
 
     def _apply_note_to_ui(self, note: storage.NoteState) -> None:
@@ -849,6 +1037,10 @@ class MainWindow(QMainWindow):
             self._active_note_index = index
             return
         if self._switching_tabs:
+            return
+        if self.running_notes_mode:
+            self._sync_from_running_notes()
+            self._active_note_index = index
             return
         previous = getattr(self, "_active_note_index", -1)
         if previous >= 0 and previous != index:
@@ -1011,6 +1203,10 @@ class MainWindow(QMainWindow):
         if not self.form_focus_mode:
             return
         self.tab_row_widget.setVisible(False)
+        self.search_panel.setVisible(False)
+        self.search_toggle_btn.blockSignals(True)
+        self.search_toggle_btn.setChecked(False)
+        self.search_toggle_btn.blockSignals(False)
         self.menuBar().setVisible(False)
         self.form_header_widget.setVisible(False)
         self.form_toolbar.setVisible(False)
@@ -1166,6 +1362,8 @@ class MainWindow(QMainWindow):
     def _on_compact_toggled(self, checked: bool):
         if checked and self.form_focus_mode:
             self._exit_form_focus_mode()
+        if checked and self.running_notes_mode:
+            self._exit_running_notes_mode()
         self.act_compact.blockSignals(True)
         self.act_compact.setChecked(checked)
         self.act_compact.blockSignals(False)
@@ -1416,9 +1614,15 @@ class MainWindow(QMainWindow):
         self._schedule_save()
 
     def on_new_note(self):
+        if self.running_notes_mode:
+            self._sync_from_running_notes()
         self._add_note_tab(apply_template=True)
         self._set_status("Opened a new note tab from the default template.")
-        self.paste_box.setFocus()
+        if self.running_notes_mode:
+            self._refresh_running_notes_view()
+            self.running_notes_edit.setFocus()
+        else:
+            self.paste_box.setFocus()
 
     def on_add_field(self):
         self._add_row(Field("", ""))
@@ -1504,24 +1708,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-        except OSError as exc:
-            QMessageBox.critical(self, "Open failed", f"Could not open the file:\n{exc}")
-            return
-
-        self._remember_notes_dir(path)
-        self._add_note_tab(apply_template=False)
-        self.paste_box.setPlainText(text)
-        index = self.note_tab_bar.currentIndex()
-        if 0 <= index < len(self._notes):
-            self._notes[index].title = Path(path).stem[:32]
-        self.on_parse()
-        self._capture_current_note()
-        self._schedule_save()
-        self._set_status(f"Opened {path}")
-        self.paste_box.setFocus()
+        self._open_note_path(path)
 
     def on_copy(self):
         self._update_preview()
@@ -1559,9 +1746,416 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
             self._remember_notes_dir(path)
+            index = self.note_tab_bar.currentIndex()
+            if 0 <= index < len(self._notes):
+                self._notes[index].source_path = path
+                self._schedule_save()
             self._set_status(f"Saved to {path}")
         except OSError as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save the file:\n{exc}")
+
+    # --------------------------------------------------------------- search
+
+    def _on_search_toggle_clicked(self, checked: bool) -> None:
+        if checked:
+            self._show_search_panel()
+        else:
+            self._hide_search_panel()
+
+    def _show_search_panel(self) -> None:
+        if self.running_notes_mode:
+            self.running_notes_find_input.setFocus()
+            self.running_notes_find_input.selectAll()
+            query = self.running_notes_find_input.text().strip()
+            if query:
+                self._find_in_running_notes(forward=True, from_start=True)
+            return
+        self.search_panel.setVisible(True)
+        self.search_toggle_btn.blockSignals(True)
+        self.search_toggle_btn.setChecked(True)
+        self.search_toggle_btn.blockSignals(False)
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+        if self.search_input.text().strip():
+            self._run_search()
+
+    def _hide_search_panel(self) -> None:
+        self.search_panel.setVisible(False)
+        self.search_toggle_btn.blockSignals(True)
+        self.search_toggle_btn.setChecked(False)
+        self.search_toggle_btn.blockSignals(False)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            if (
+                event.key() == Qt.Key_Escape
+                and self.search_panel.isVisible()
+                and obj in (self.search_input, self.search_results)
+            ):
+                self._hide_search_panel()
+                return True
+            if obj is self.running_notes_find_input and event.key() in (
+                Qt.Key_Return,
+                Qt.Key_Enter,
+            ):
+                if event.modifiers() & Qt.ShiftModifier:
+                    self._find_prev_in_running_notes()
+                else:
+                    self._find_next_in_running_notes()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _on_search_text_changed(self, _text: str) -> None:
+        self._search_timer.start()
+
+    def _note_search_text(self, note: storage.NoteState) -> str:
+        parts = [
+            note.title or "",
+            note.raw_import or "",
+            running_notes.note_body(note, default_mode=self._current_export_mode()),
+        ]
+        for field in note.fields:
+            parts.append(field.label)
+            parts.append(field.value)
+        return "\n".join(parts)
+
+    def _run_search(self) -> None:
+        query = self.search_input.text().strip()
+        self.search_results.clear()
+        self._search_hits = []
+        if not query:
+            self.search_status.setText("Type to search all notes.")
+            return
+
+        self._capture_current_note()
+        hits: List[storage.SearchHit] = []
+        open_paths = {
+            Path(n.source_path).resolve()
+            for n in self._notes
+            if n.source_path
+        }
+
+        for index, note in enumerate(self._notes):
+            text = self._note_search_text(note)
+            if not storage.search_note_text(text, query):
+                continue
+            title = self._derive_tab_title(note, index)
+            hits.append(
+                storage.SearchHit(
+                    kind="tab",
+                    title=title,
+                    snippet=storage.snippet_around(text, query),
+                    note_id=note.id,
+                    path=note.source_path,
+                    tab_index=index,
+                )
+            )
+
+        notes_dir = storage.resolve_notes_dir(self.settings)
+        for path in storage.list_note_files(notes_dir):
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved in open_paths:
+                continue
+            text = storage.read_text_file(path)
+            if text is None or not storage.search_note_text(text, query):
+                continue
+            hits.append(
+                storage.SearchHit(
+                    kind="file",
+                    title=path.stem,
+                    snippet=storage.snippet_around(text, query),
+                    path=str(path),
+                )
+            )
+
+        self._search_hits = hits
+        for hit in hits:
+            prefix = "Open tab" if hit.kind == "tab" else "Saved file"
+            item = QListWidgetItem(f"{hit.title}\n{prefix} — {hit.snippet}")
+            item.setToolTip(hit.path or hit.title)
+            self.search_results.addItem(item)
+
+        if hits:
+            self.search_status.setText(
+                f"{len(hits)} result{'s' if len(hits) != 1 else ''} for “{query}”."
+            )
+            self.search_results.setCurrentRow(0)
+        else:
+            self.search_status.setText(f"No matches for “{query}”.")
+
+    def _activate_first_search_hit(self) -> None:
+        if self.search_results.count() > 0:
+            self.search_results.setCurrentRow(0)
+            item = self.search_results.currentItem()
+            if item is not None:
+                self._on_search_result_activated(item)
+
+    def _on_search_result_activated(self, item: QListWidgetItem) -> None:
+        row = self.search_results.row(item)
+        if row < 0 or row >= len(self._search_hits):
+            return
+        hit = self._search_hits[row]
+        if hit.kind == "tab" and 0 <= hit.tab_index < len(self._notes):
+            if self.running_notes_mode:
+                self.act_running_notes.setChecked(False)
+            self.note_tab_bar.setCurrentIndex(hit.tab_index)
+            self._set_status(f"Opened tab “{hit.title}”.")
+            return
+        if hit.kind == "file" and hit.path:
+            self._open_note_path(hit.path)
+
+    def _open_note_path(self, path: str) -> None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            QMessageBox.critical(self, "Open failed", f"Could not open the file:\n{exc}")
+            return
+
+        if self.running_notes_mode:
+            self.act_running_notes.setChecked(False)
+
+        # Reuse an already-open tab for the same file when possible.
+        for index, note in enumerate(self._notes):
+            if note.source_path and Path(note.source_path) == Path(path):
+                self.note_tab_bar.setCurrentIndex(index)
+                self._set_status(f"Opened {path}")
+                return
+
+        self._remember_notes_dir(path)
+        self._add_note_tab(apply_template=False)
+        self.paste_box.setPlainText(text)
+        index = self.note_tab_bar.currentIndex()
+        if 0 <= index < len(self._notes):
+            self._notes[index].title = Path(path).stem[:32]
+            self._notes[index].source_path = path
+        self.on_parse()
+        self._capture_current_note()
+        self._schedule_save()
+        self._set_status(f"Opened {path}")
+        self.paste_box.setFocus()
+
+    # -------------------------------------------------------- running notes
+
+    def _on_running_notes_btn_clicked(self, checked: bool) -> None:
+        self.act_running_notes.setChecked(checked)
+
+    def _on_running_notes_toggled(self, checked: bool) -> None:
+        if checked and not self.running_notes_mode:
+            self._enter_running_notes_mode()
+        elif not checked and self.running_notes_mode:
+            self._exit_running_notes_mode()
+
+    def _enter_running_notes_mode(self) -> None:
+        if self.running_notes_mode:
+            return
+        if self.form_focus_mode:
+            self._exit_form_focus_mode()
+        if self.compact:
+            self.act_compact.setChecked(False)
+
+        self._capture_current_note()
+        self.running_notes_mode = True
+        self.act_running_notes.blockSignals(True)
+        self.act_running_notes.setChecked(True)
+        self.act_running_notes.blockSignals(False)
+        self.running_notes_btn.blockSignals(True)
+        self.running_notes_btn.setChecked(True)
+        self.running_notes_btn.blockSignals(False)
+
+        self._content_row.setVisible(False)
+        self.running_notes_panel.setVisible(True)
+        self._refresh_running_notes_view()
+        self.running_notes_find_status.clear()
+        self.running_notes_edit.setFocus()
+        self._set_status(
+            f"Running notes — {len(self._notes)} note"
+            f"{'s' if len(self._notes) != 1 else ''} compiled."
+        )
+
+    def _exit_running_notes_mode(self) -> None:
+        if not self.running_notes_mode:
+            return
+        self._running_notes_sync_timer.stop()
+        self._sync_from_running_notes()
+        self.running_notes_mode = False
+        self.act_running_notes.blockSignals(True)
+        self.act_running_notes.setChecked(False)
+        self.act_running_notes.blockSignals(False)
+        self.running_notes_btn.blockSignals(True)
+        self.running_notes_btn.setChecked(False)
+        self.running_notes_btn.blockSignals(False)
+
+        self.running_notes_panel.setVisible(False)
+        self._content_row.setVisible(True)
+        index = self.note_tab_bar.currentIndex()
+        if 0 <= index < len(self._notes):
+            self._apply_note_to_ui(self._notes[index])
+        self._refresh_tab_labels()
+        self._apply_panel_visibility()
+        self._update_rails()
+        self._set_status("Exited running notes.")
+
+    def _refresh_running_notes_view(self) -> None:
+        if not self.running_notes_mode:
+            return
+        text = running_notes.compile_running_notes(
+            self._notes,
+            default_mode=self._current_export_mode(),
+        )
+        self._updating_running_notes = True
+        cursor = self.running_notes_edit.textCursor()
+        pos = cursor.position()
+        self.running_notes_edit.setPlainText(text)
+        cursor = self.running_notes_edit.textCursor()
+        cursor.setPosition(min(pos, len(text)))
+        self.running_notes_edit.setTextCursor(cursor)
+        self._updating_running_notes = False
+
+    def _on_running_notes_edited(self) -> None:
+        if self._updating_running_notes or not self.running_notes_mode:
+            return
+        self._running_notes_sync_timer.start()
+        if self.running_notes_find_input.text().strip():
+            self._update_running_notes_find_status()
+
+    def _on_running_notes_find_text_changed(self, _text: str) -> None:
+        query = self.running_notes_find_input.text()
+        if not query.strip():
+            self.running_notes_find_status.clear()
+            return
+        self._find_in_running_notes(forward=True, from_start=True)
+
+    def _find_next_in_running_notes(self) -> None:
+        self._find_in_running_notes(forward=True, from_start=False)
+
+    def _find_prev_in_running_notes(self) -> None:
+        self._find_in_running_notes(forward=False, from_start=False)
+
+    def _count_running_notes_matches(self, query: str) -> int:
+        if not query:
+            return 0
+        text = self.running_notes_edit.toPlainText()
+        lower = text.lower()
+        needle = query.lower()
+        count = 0
+        start = 0
+        while True:
+            idx = lower.find(needle, start)
+            if idx < 0:
+                break
+            count += 1
+            start = idx + max(len(needle), 1)
+        return count
+
+    def _update_running_notes_find_status(self, *, current: int | None = None) -> None:
+        query = self.running_notes_find_input.text().strip()
+        if not query:
+            self.running_notes_find_status.clear()
+            return
+        total = self._count_running_notes_matches(query)
+        if total == 0:
+            self.running_notes_find_status.setText("No matches")
+            return
+        if current is None:
+            self.running_notes_find_status.setText(f"{total} match{'es' if total != 1 else ''}")
+            return
+        self.running_notes_find_status.setText(f"{current} of {total}")
+
+    def _match_index_at_cursor(self, query: str) -> int:
+        """1-based index of the match at the current selection, or 0."""
+        cursor = self.running_notes_edit.textCursor()
+        if not cursor.hasSelection():
+            return 0
+        selected = cursor.selectedText().replace("\u2029", "\n")
+        if selected.lower() != query.lower():
+            return 0
+        pos = min(cursor.selectionStart(), cursor.selectionEnd())
+        lower = self.running_notes_edit.toPlainText().lower()
+        needle = query.lower()
+        index = 0
+        start = 0
+        while True:
+            idx = lower.find(needle, start)
+            if idx < 0:
+                return 0
+            index += 1
+            if idx == pos:
+                return index
+            start = idx + max(len(needle), 1)
+
+    def _find_in_running_notes(self, *, forward: bool, from_start: bool) -> None:
+        query = self.running_notes_find_input.text()
+        if not query.strip():
+            self.running_notes_find_status.clear()
+            return
+
+        document = self.running_notes_edit.document()
+        flags = QTextDocument.FindBackward if not forward else QTextDocument.FindFlags()
+
+        if from_start:
+            cursor = QTextCursor(document)
+            if not forward:
+                cursor.movePosition(QTextCursor.End)
+        else:
+            cursor = self.running_notes_edit.textCursor()
+
+        found = document.find(query, cursor, flags)
+        if found.isNull():
+            # Wrap around.
+            wrap = QTextCursor(document)
+            if forward:
+                wrap.movePosition(QTextCursor.Start)
+            else:
+                wrap.movePosition(QTextCursor.End)
+            found = document.find(query, wrap, flags)
+
+        if found.isNull():
+            self.running_notes_find_status.setText("No matches")
+            return
+
+        self.running_notes_edit.setTextCursor(found)
+        self.running_notes_edit.ensureCursorVisible()
+        self.running_notes_edit.setFocus()
+        # Keep the find box ready for the next Enter without stealing selection.
+        self.running_notes_find_input.setFocus()
+        current = self._match_index_at_cursor(query)
+        self._update_running_notes_find_status(current=current or None)
+
+    def _sync_from_running_notes(self) -> None:
+        if not self.running_notes_mode:
+            return
+        text = self.running_notes_edit.toPlainText()
+        sections = running_notes.split_running_notes(text)
+        if not sections:
+            self._set_status(
+                "Running notes: no <<<NOTE:…>>> markers found — edits not applied."
+            )
+            return
+        updated, count = running_notes.apply_sections_to_notes(
+            self._notes,
+            sections,
+            default_mode=self._current_export_mode(),
+        )
+        self._notes = updated
+        self._write_linked_note_files()
+        self._schedule_save()
+        self._set_status(
+            f"Running notes synced ({count} note{'s' if count != 1 else ''} updated)."
+        )
+
+    def _write_linked_note_files(self) -> None:
+        """Write each note that has a source_path back to its .txt file."""
+        for note in self._notes:
+            if not note.source_path:
+                continue
+            body = running_notes.note_body(
+                note, default_mode=self._current_export_mode()
+            )
+            storage.write_text_file(Path(note.source_path), body)
 
     # ---------------------------------------------------------------- theme
 
@@ -1682,7 +2276,8 @@ class MainWindow(QMainWindow):
         self._save_timer.start()
 
     def _persist_draft(self):
-        self._capture_current_note()
+        if not self.running_notes_mode:
+            self._capture_current_note()
         storage.save_workspace(storage.WorkspaceState(
             active_index=max(0, self.note_tab_bar.currentIndex()),
             notes=self._notes,
@@ -1776,5 +2371,8 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- events
 
     def closeEvent(self, event):
+        if self.running_notes_mode:
+            self._running_notes_sync_timer.stop()
+            self._sync_from_running_notes()
         self._persist_draft()
         super().closeEvent(event)

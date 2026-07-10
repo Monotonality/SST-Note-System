@@ -14,8 +14,9 @@ lines (text without a colon that is not part of a recognised block) as a
 continuation of the previous value.
 
 List items (``*``, ``-``, numbered) and timestamps (``23:00``) are not
-treated as field boundaries. Inside a multi-line block, only a following
-section header (``Label:`` with no value on the same line) ends the block.
+treated as field boundaries. A following ``Label:`` or ``Label: value`` line
+always starts a new field, so top-level fields like ``INC Number:`` are never
+swallowed into the previous block as plain text.
 """
 
 from __future__ import annotations
@@ -99,10 +100,19 @@ def _is_section_header_line(line: str) -> bool:
     return parsed is not None and parsed[1] == ""
 
 
+def _is_field_boundary_line(line: str) -> bool:
+    """True when *line* should start a new field (same-line or label-block header).
+
+    List items are excluded by :func:`_is_label_line`, so bullet/numbered content
+    with colons stays inside the current block.
+    """
+    return _is_label_line(line) is not None
+
+
 def _collect_block_value(lines: List[str], start: int) -> tuple[str, int]:
     """Read a multi-line value starting at *start*.
 
-    Consumes lines until the next recognised label line. Blank lines between
+    Consumes lines until the next recognised field boundary. Blank lines between
     value lines are preserved; trailing blanks are dropped. Returns
     ``(value, next_index)`` where *next_index* is the first unconsumed line.
     """
@@ -111,13 +121,13 @@ def _collect_block_value(lines: List[str], start: int) -> tuple[str, int]:
     n = len(lines)
     while j < n:
         line = lines[j]
-        if line.strip() and _is_section_header_line(line):
+        if line.strip() and _is_field_boundary_line(line):
             break
         if not line.strip():
             k = j + 1
             while k < n and not lines[k].strip():
                 k += 1
-            if k < n and _is_section_header_line(lines[k]):
+            if k < n and _is_field_boundary_line(lines[k]):
                 break
             if parts:
                 parts.append("")
@@ -160,11 +170,11 @@ def parse_notes(text: str) -> List[Field]:
         if parsed is not None:
             label, value = parsed
             if value == "":
-                # Label block: collect every following line until the next field.
+                # Label block: collect following non-field lines as the value.
                 j = i + 1
                 while j < n and not lines[j].strip():
                     j += 1
-                if j < n and not _is_section_header_line(lines[j]):
+                if j < n and not _is_field_boundary_line(lines[j]):
                     block_value, j = _collect_block_value(lines, j)
                     fields.append(Field(
                         label=label,

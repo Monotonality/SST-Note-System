@@ -14,7 +14,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import ORG_NAME
 from .parser import Field
@@ -33,12 +33,25 @@ class NoteState:
     raw_import: str = ""
     export_mode: str = ""
     blank_between: bool = False
+    source_path: str = ""
 
 
 @dataclass
 class WorkspaceState:
     active_index: int = 0
     notes: List[NoteState] = field(default_factory=list)
+
+
+@dataclass
+class SearchHit:
+    """A match from open tabs and/or saved .txt files."""
+
+    kind: str  # "tab" | "file"
+    title: str
+    snippet: str
+    note_id: str = ""
+    path: str = ""
+    tab_index: int = -1
 
 
 def app_data_dir() -> Path:
@@ -99,6 +112,7 @@ def _note_from_dict(data: Dict[str, Any]) -> NoteState:
         raw_import=data.get("raw_import", ""),
         export_mode=data.get("export_mode", ""),
         blank_between=bool(data.get("blank_between", False)),
+        source_path=data.get("source_path", "") or "",
     )
 
 
@@ -120,6 +134,7 @@ def save_workspace(workspace: WorkspaceState) -> None:
                 "raw_import": note.raw_import,
                 "export_mode": note.export_mode,
                 "blank_between": note.blank_between,
+                "source_path": note.source_path,
             }
             for note in workspace.notes
         ],
@@ -207,6 +222,53 @@ def remember_notes_dir(settings: Dict[str, Any], file_path: str) -> None:
     parent = Path(file_path).parent
     if parent.is_dir():
         settings["last_notes_dir"] = str(parent)
+
+
+def list_note_files(directory: Path) -> List[Path]:
+    """Return ``*.txt`` files in *directory* (non-recursive), sorted by name."""
+    if not directory.is_dir():
+        return []
+    try:
+        return sorted(
+            (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".txt"),
+            key=lambda p: p.name.lower(),
+        )
+    except OSError:
+        return []
+
+
+def read_text_file(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def write_text_file(path: Path, text: str) -> bool:
+    try:
+        path.write_text(text, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def snippet_around(text: str, query: str, *, radius: int = 48) -> str:
+    lower = text.lower()
+    idx = lower.find(query.lower())
+    if idx < 0:
+        return " ".join(text.split())[: radius * 2]
+    start = max(0, idx - radius)
+    end = min(len(text), idx + len(query) + radius)
+    snippet = text[start:end].replace("\n", " ").strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
+def search_note_text(text: str, query: str) -> bool:
+    return bool(query) and query.lower() in text.lower()
 
 
 # --- Settings --------------------------------------------------------------

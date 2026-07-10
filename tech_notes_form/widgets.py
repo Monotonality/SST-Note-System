@@ -286,6 +286,7 @@ KEYBOARD_SHORTCUT_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("Ctrl+N", "Open a new note tab from the default template"),
             ("Ctrl+O", "Open a saved note file"),
+            ("Ctrl+F", "Search open notes and saved .txt files (find in running notes while that view is open)"),
             ("Ctrl+S", "Save the export preview to a text file"),
             ("Ctrl+Shift+C", "Copy the export preview to the clipboard"),
             ("Ctrl+Shift+T", "Insert the current date and time at the cursor"),
@@ -304,6 +305,7 @@ KEYBOARD_SHORTCUT_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("Ctrl+Shift+2", "Toggle wide form layout (label left, value right)"),
             ("Ctrl+E", "Toggle editable field labels (plain text when off)"),
             ("Ctrl+Shift+F", "Toggle form focus mode (maximize the form editor)"),
+            ("Ctrl+Shift+R", "Toggle running notes (all open notes in one document)"),
         ],
     ),
     (

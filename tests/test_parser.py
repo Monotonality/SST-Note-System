@@ -81,6 +81,9 @@ class ParseNotesTests(unittest.TestCase):
                 "Actions Taken",
                 "Next Steps",
                 "Closure Details",
+                "Resolution Summary",
+                "Root Cause",
+                "Closure Date",
             ],
         )
 
@@ -90,13 +93,14 @@ class ParseNotesTests(unittest.TestCase):
         self.assertIn("23:00 UTC", history.value)
         self.assertNotIn("23: 00 UTC", history.value)
 
-    def test_incident_sample_closure_subfields_stay_in_block(self):
+    def test_incident_sample_closure_subfields_are_form_fields(self):
         fields = parse_notes(INCIDENT_SAMPLE)
-        closure = next(f for f in fields if f.label == "Closure Details")
-        self.assertEqual(closure.export_mode, MODE_LABEL_BLOCK)
-        self.assertIn("Resolution Summary: N/A", closure.value)
-        self.assertIn("Root Cause: N/A", closure.value)
-        self.assertIn("Closure Date: N/A", closure.value)
+        by_label = {f.label: f for f in fields}
+        self.assertEqual(by_label["Closure Details"].export_mode, MODE_LABEL_BLOCK)
+        self.assertEqual(by_label["Closure Details"].value, "")
+        self.assertEqual(by_label["Resolution Summary"].value, "N/A")
+        self.assertEqual(by_label["Root Cause"].value, "N/A")
+        self.assertEqual(by_label["Closure Date"].value, "N/A")
 
     def test_incident_round_trip_preserves_ticket_history_times(self):
         fields = parse_notes(INCIDENT_SAMPLE)
@@ -120,6 +124,40 @@ Steps taken:
         self.assertEqual(len(fields), 2)
         self.assertEqual(fields[0].value, "N/A")
         self.assertEqual(fields[1].value, "n/a")
+
+    def test_label_block_does_not_swallow_following_same_line_field(self):
+        """Empty Priority: must not absorb ``INC Number: …`` as plaintext."""
+        sample = """\
+Priority:
+
+INC Number: INC0084321
+Agency: Department of Transportation (DoT)
+"""
+        fields = parse_notes(sample)
+        self.assertEqual(
+            [(f.label, f.value) for f in fields],
+            [
+                ("Priority", ""),
+                ("INC Number", "INC0084321"),
+                ("Agency", "Department of Transportation (DoT)"),
+            ],
+        )
+
+    def test_label_block_value_stops_at_next_same_line_field(self):
+        sample = """\
+INC Number:
+INC0084321
+Agency: DoT
+Name: Alex
+"""
+        fields = parse_notes(sample)
+        self.assertEqual(fields[0].label, "INC Number")
+        self.assertEqual(fields[0].value, "INC0084321")
+        self.assertEqual(fields[0].export_mode, MODE_LABEL_BLOCK)
+        self.assertEqual(fields[1].label, "Agency")
+        self.assertEqual(fields[1].value, "DoT")
+        self.assertEqual(fields[2].label, "Name")
+        self.assertEqual(fields[2].value, "Alex")
 
 
 if __name__ == "__main__":

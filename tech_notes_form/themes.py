@@ -182,6 +182,25 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
     }}
     #PanelTitle {{ font-size: {title_font}px; font-weight: 600; }}
     #StatusLabel {{ color: {p.muted}; }}
+    #SearchPanel {{
+        background-color: {p.panel};
+        border: 1px solid {p.border};
+        border-radius: 8px;
+    }}
+    QLineEdit#SearchInput {{
+        padding: 6px 10px;
+    }}
+    QListWidget#SearchResults {{
+        min-height: 72px;
+    }}
+    QListWidget#SearchResults::item {{
+        padding: 6px 8px;
+        border-bottom: 1px solid {p.border};
+    }}
+    QListWidget#SearchResults::item:selected {{
+        background-color: {p.accent};
+        color: {p.accent_text};
+    }}
     #ShortcutKey {{
         font-family: Consolas, "Courier New", monospace;
         font-weight: 600;
