@@ -258,6 +258,17 @@ def build_stylesheet(theme: str, compact: bool = False) -> str:
     }}
     QPushButton:hover {{ border: 1px solid {p.accent}; }}
     QPushButton:pressed {{ background-color: {p.input_bg}; }}
+    QPushButton#ModeToggle:checked {{
+        border: 1px solid {p.accent};
+        background-color: {p.accent};
+        color: {p.accent_text};
+        font-weight: 600;
+    }}
+    QPushButton#ModeToggle:checked:hover {{
+        background-color: {p.accent_hover};
+        border-color: {p.accent_hover};
+        color: {p.accent_text};
+    }}
 
     QPushButton#Primary {{
         background-color: {p.accent};

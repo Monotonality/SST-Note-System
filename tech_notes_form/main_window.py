@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
         tab_row.addWidget(self.add_note_tab_btn)
 
         self.search_toggle_btn = QPushButton("Search")
+        self.search_toggle_btn.setObjectName("ModeToggle")
         self.search_toggle_btn.setToolTip("Search open notes and saved .txt files (Ctrl+F)")
         self.search_toggle_btn.setAccessibleName("Toggle note search")
         self.search_toggle_btn.setCheckable(True)
@@ -226,6 +227,7 @@ class MainWindow(QMainWindow):
         tab_row.addWidget(self.search_toggle_btn)
 
         self.running_notes_btn = QPushButton("Running notes")
+        self.running_notes_btn.setObjectName("ModeToggle")
         self.running_notes_btn.setToolTip(
             "Edit all open notes as one continuous document (Ctrl+Shift+R)"
         )
@@ -233,6 +235,16 @@ class MainWindow(QMainWindow):
         self.running_notes_btn.setCheckable(True)
         self.running_notes_btn.clicked.connect(self._on_running_notes_btn_clicked)
         tab_row.addWidget(self.running_notes_btn)
+
+        self.form_focus_btn = QPushButton("Form focus")
+        self.form_focus_btn.setObjectName("ModeToggle")
+        self.form_focus_btn.setToolTip(
+            "Maximize the form editor (Ctrl+Shift+F)"
+        )
+        self.form_focus_btn.setAccessibleName("Toggle form focus mode")
+        self.form_focus_btn.setCheckable(True)
+        self.form_focus_btn.clicked.connect(self._on_form_focus_btn_clicked)
+        tab_row.addWidget(self.form_focus_btn)
         tab_row.addStretch(1)
         self._central_layout.addWidget(self.tab_row_widget)
 
@@ -789,6 +801,9 @@ class MainWindow(QMainWindow):
         self.act_form_focus.blockSignals(True)
         self.act_form_focus.setChecked(True)
         self.act_form_focus.blockSignals(False)
+        self.form_focus_btn.blockSignals(True)
+        self.form_focus_btn.setChecked(True)
+        self.form_focus_btn.blockSignals(False)
         self._apply_form_focus_layout()
         self._update_rails()
 
@@ -799,6 +814,9 @@ class MainWindow(QMainWindow):
         self.act_form_focus.blockSignals(True)
         self.act_form_focus.setChecked(False)
         self.act_form_focus.blockSignals(False)
+        self.form_focus_btn.blockSignals(True)
+        self.form_focus_btn.setChecked(False)
+        self.form_focus_btn.blockSignals(False)
         self._restore_pre_focus_state()
         self._sync_wide_focus_actions()
 
@@ -955,6 +973,9 @@ class MainWindow(QMainWindow):
             self.act_form_focus.blockSignals(True)
             self.act_form_focus.setChecked(False)
             self.act_form_focus.blockSignals(False)
+            self.form_focus_btn.blockSignals(True)
+            self.form_focus_btn.setChecked(False)
+            self.form_focus_btn.blockSignals(False)
             self._restore_pre_focus_state()
         else:
             self._apply_panel_visibility()
@@ -1202,11 +1223,19 @@ class MainWindow(QMainWindow):
     def _apply_form_focus_layout(self) -> None:
         if not self.form_focus_mode:
             return
-        self.tab_row_widget.setVisible(False)
+        # Keep the mode toggles visible (with active styling) so focus can be exited;
+        # hide only the note tabs themselves.
+        self.tab_row_widget.setVisible(True)
+        self.note_tab_bar.setVisible(False)
+        self.add_note_tab_btn.setVisible(False)
+        self.running_notes_btn.setVisible(False)
         self.search_panel.setVisible(False)
         self.search_toggle_btn.blockSignals(True)
         self.search_toggle_btn.setChecked(False)
         self.search_toggle_btn.blockSignals(False)
+        self.form_focus_btn.blockSignals(True)
+        self.form_focus_btn.setChecked(True)
+        self.form_focus_btn.blockSignals(False)
         self.menuBar().setVisible(False)
         self.form_header_widget.setVisible(False)
         self.form_toolbar.setVisible(False)
@@ -1242,6 +1271,12 @@ class MainWindow(QMainWindow):
     def _restore_pre_focus_state(self) -> None:
         state = self._pre_focus_state
         self.tab_row_widget.setVisible(True)
+        self.note_tab_bar.setVisible(True)
+        self.add_note_tab_btn.setVisible(True)
+        self.running_notes_btn.setVisible(True)
+        self.form_focus_btn.blockSignals(True)
+        self.form_focus_btn.setChecked(False)
+        self.form_focus_btn.blockSignals(False)
         self.menuBar().setVisible(True)
         self.form_header_widget.setVisible(True)
         self.form_toolbar.setVisible(True)
@@ -1281,14 +1316,21 @@ class MainWindow(QMainWindow):
                 self._ensure_side_panel_width(2, DEFAULT_SPLITTER_SIZES[2])
         self._update_rails()
 
+    def _on_form_focus_btn_clicked(self, checked: bool) -> None:
+        self.act_form_focus.setChecked(checked)
+
     def _on_form_focus_toggled(self, checked: bool) -> None:
         if checked and not self.form_focus_mode:
             self._enter_form_focus_mode()
-            self._set_status("Form focus on — Ctrl+Shift+F to restore.")
+            self._set_status("Form focus on — click Form focus again to restore.")
             return
         if not checked and self.form_focus_mode:
             self._exit_form_focus_mode()
             self._set_status("Form focus off.")
+            return
+        self.form_focus_btn.blockSignals(True)
+        self.form_focus_btn.setChecked(self.form_focus_mode)
+        self.form_focus_btn.blockSignals(False)
 
     def _apply_compact_layout(self):
         """Compact mode hides the form and uses the export live preview as the editor."""
